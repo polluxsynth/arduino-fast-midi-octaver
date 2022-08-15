@@ -121,6 +121,18 @@ byte apply_note_off_transpose(byte note)
   return note + descriptors[note].transpose;
 }
 
+/* Send status byte, honoring running status, unless fresh_status_byte is set.
+ * Return new running status (may be unchanged).
+ */
+byte send_running(byte status, byte running_status, bool fresh_status_byte)
+{
+  if (status != running_status || fresh_status_byte) {
+    Serial.write(status);
+    return status;
+  }
+  return running_status;
+}
+
 void setup() {
   // put your setup code here, to run once:
   MIDI.begin(MIDI_CHANNEL_OMNI);  // Listen to all incoming messages
@@ -143,6 +155,13 @@ void loop() {
 
   transpose = read_transpose();
   //MIDI.read(); /* Don't use MIDI library to parse MIDI data */
+  /* Normally data received is echoed at the very end of the if clause, unless for some
+   * reason processing needs to be delayed (note off messages, note on messages in
+   * normal latency mode, control change messages when SKIP_CC_22 is set), in which
+   * case the normal echoing of data is skipped and deferred until some later pass,
+   * and the queued-up status and potentially first data byte are echoed then, followed by
+   * the normal echoing of the final data byte.
+   */
   if (Serial.available()) {
     static byte channel; /* last received channel */
     static byte running_status = 0; /* outgoing running status */
@@ -228,10 +247,7 @@ void loop() {
               byte new_status = NOTE_ON | (descriptors[data].channel ?
                                            (descriptors[data].channel - 1) :
                                            channel);
-              if (new_status != running_status || fresh_status_byte) {
-                Serial.write(new_status);
-                running_status = new_status;
-              }
+              running_status = send_running(new_status, running_status, fresh_status_byte);
               Serial.write(apply_note_off_transpose(note));
             }
           }
@@ -248,10 +264,7 @@ void loop() {
                incoming stream employs running status while the transpose is being changed, so we
                want to minimize the number of inserted bytes added.
             */
-            if (new_status != running_status || fresh_status_byte) {
-              Serial.write(new_status);
-              running_status = new_status;
-            }
+            running_status = send_running(new_status, running_status, fresh_status_byte);
           }
 #endif
           data = apply_note_off_transpose(data);
@@ -268,10 +281,7 @@ void loop() {
             /* We've got CC + address, so send it on */
             /* Value will be sent when we get it */
             byte new_status = CONTROL_CHANGE | channel;
-            if (new_status != running_status || fresh_status_byte) {
-              Serial.write(new_status);
-              running_status = new_status;
-            }
+            running_status = send_running(new_status, running_status, fresh_status_byte);
           }
           break;
         case STATE_CC_VAL:
