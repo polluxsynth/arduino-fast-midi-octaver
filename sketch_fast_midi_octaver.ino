@@ -40,6 +40,12 @@ MIDI_CREATE_INSTANCE(HardwareSerial, Serial, MIDI);
  */
 //#define SKIP_CC "\026\027\030" /* CC 22, 23, 24 */
 
+#undef MIRROR_INCOMING_RUNNING_STATUS
+/* Every second, reset running status to avoid long periods without status on output */
+#ifndef MIRROR_INCOMING_RUNNING_STATUS
+#define RUNNING_STATUS_TIMEOUT_US 1000000
+#endif
+
 /* Digital pins 0 and 1 are used for (MIDI) serial communication, so use digital I/O
    2 and upwards for the transpose switch input.
 */
@@ -65,12 +71,13 @@ MIDI_CREATE_INSTANCE(HardwareSerial, Serial, MIDI);
 #define NOTE_OFF 128
 #define NOTE_ON 144
 #define CONTROL_CHANGE 176
-#define REALTIME 248
+#define REALTIME 248 /* This and above */
 
 byte transpose = 0;
 bool low_latency_mode = true;
 
 long int led_flash_time;
+long int running_status_time;
 
 struct note_descriptor {
   byte transpose; /* 2's complement but we don't tell anybody... */
@@ -146,16 +153,25 @@ void setup() {
   pinMode(TRANSPOSE_PIN_4, INPUT_PULLUP);
   pinMode(TRANSPOSE_PIN_5, INPUT_PULLUP);
   pinMode(LED_BUILTIN, OUTPUT);
-  led_flash_time = micros();
+  running_status_time = led_flash_time = micros();
 }
 
 void loop() {
   long int now = micros();
+  static byte running_status = 0; /* outgoing running status */
 
   // put your main code here, to run repeatedly:
   /* Turn led off at end of flash period */
   if (now - led_flash_time > LED_FLASH_US)
     digitalWrite(LED_BUILTIN, LOW ^ !low_latency_mode);
+
+#ifdef RUNNING_STATUS_TIMEOUT_US
+  if (now - running_status_time > RUNNING_STATUS_TIMEOUT_US)
+  {
+    running_status = 0; /* clear running status, forcing next message status byte to be sent */
+    running_status_time = now; /* reset timer */
+  }
+#endif
 
   transpose = read_transpose();
   //MIDI.read(); /* Don't use MIDI library to parse MIDI data */
@@ -168,11 +184,10 @@ void loop() {
    */
   if (Serial.available()) {
     static byte channel; /* last received channel */
-    static byte running_status = 0; /* outgoing running status */
     static byte state = STATE_PASS;
     static byte note; /* saved note across note on/off message reception, in !low_latency_mode */
     static byte addr; /* saved control change address */
-    static bool fresh_status_byte; /* no current input running status (= current message had status byte) */
+    static bool fresh_status_byte = false; /* no current input running status */
 #ifdef SKIP_CC
     static bool skipping_cc = false;
 #endif
@@ -187,7 +202,9 @@ void loop() {
       byte status = data & 0xf0;
 
       channel = data & 0x0f;
+#ifdef MIRROR_INCOMING_RUNNING_STATUS
       fresh_status_byte = true;
+#endif
 
       /* Track note on/off status. All other channel messages just get sent
          through.
