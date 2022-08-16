@@ -48,6 +48,7 @@ MIDI_CREATE_INSTANCE(HardwareSerial, Serial, MIDI);
 #define TRANSPOSE_PIN_2        4
 #define TRANSPOSE_PIN_3        5
 #define TRANSPOSE_PIN_4        6
+#define TRANSPOSE_PIN_5        7
 
 /* LED flash time */
 #define LED_FLASH_US 10000
@@ -83,16 +84,18 @@ byte read_transpose(void)
   byte new_transpose = transpose;
 
   /* High-transpose priority */
-  if (digitalRead(TRANSPOSE_PIN_4) == LOW)
+  if (digitalRead(TRANSPOSE_PIN_5) == LOW)
     new_transpose = 24;
-  else if (digitalRead(TRANSPOSE_PIN_3) == LOW)
+  else if (digitalRead(TRANSPOSE_PIN_4) == LOW)
     new_transpose = 12;
-  else if (digitalRead(TRANSPOSE_PIN_2) == LOW)
+  else if (digitalRead(TRANSPOSE_PIN_3) == LOW)
     new_transpose = 0;
-  else if (digitalRead(TRANSPOSE_PIN_1) == LOW)
+  else if (digitalRead(TRANSPOSE_PIN_2) == LOW)
     new_transpose = -12;
-  else if (digitalRead(TRANSPOSE_PIN_0) == LOW)
+  else if (digitalRead(TRANSPOSE_PIN_1) == LOW)
     new_transpose = -24;
+  else if (digitalRead(TRANSPOSE_PIN_0) == LOW)
+    new_transpose = -36;
 
   return new_transpose;
 }
@@ -141,6 +144,7 @@ void setup() {
   pinMode(TRANSPOSE_PIN_2, INPUT_PULLUP);
   pinMode(TRANSPOSE_PIN_3, INPUT_PULLUP);
   pinMode(TRANSPOSE_PIN_4, INPUT_PULLUP);
+  pinMode(TRANSPOSE_PIN_5, INPUT_PULLUP);
   pinMode(LED_BUILTIN, OUTPUT);
   led_flash_time = micros();
 }
