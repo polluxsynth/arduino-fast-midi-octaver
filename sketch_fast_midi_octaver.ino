@@ -50,6 +50,8 @@ MIDI_CREATE_INSTANCE(HardwareSerial, Serial, MIDI);
 
 #undef UI_DISPLAY
 
+#define OCTAVE_OFFSET 4 /* e.g. octave -3 => encoded octave value is 1 */
+
 /* Digital pins 0 and 1 are used for (MIDI) serial communication, so use digital I/O
    2 and upwards for the transpose switch input.
 */
@@ -96,63 +98,56 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire);
 #endif
 
 byte transpose = 0;
+byte octave_encoded = OCTAVE_OFFSET;
+byte octave_prev = 0;
 bool low_latency_mode = true;
 
 long int led_flash_time;
 long int running_status_time;
 
-struct note_descriptor {
-  byte transpose; /* 2's complement but we don't tell anybody... */
-  byte channel;
-};
+#define DESC_CHANNEL_MASK 0x0f
+#define DESC_OCTAVE_MASK 0x70 /* encoded octave */
+#define DESC_OCTAVE_SHIFT 4
+#define DESC_SUSTAIN 0x80 /* sustained by sustain pedal */
 
-struct note_descriptor descriptors[128] = { 0 };
+byte note_descriptors[128] = { 0 };
 
-byte read_transpose(void)
+byte read_octave(void)
 {
-  byte new_transpose = transpose;
+  byte new_octave = octave_encoded;
 
   /* High-transpose priority */
   if (digitalRead(TRANSPOSE_PIN_5) == LOW)
-    new_transpose = 24;
+    new_octave = 2 + OCTAVE_OFFSET;
   else if (digitalRead(TRANSPOSE_PIN_4) == LOW)
-    new_transpose = 12;
+    new_octave = 1 + OCTAVE_OFFSET;
   else if (digitalRead(TRANSPOSE_PIN_3) == LOW)
-    new_transpose = 0;
+    new_octave = 0 + OCTAVE_OFFSET;
   else if (digitalRead(TRANSPOSE_PIN_2) == LOW)
-    new_transpose = -12;
+    new_octave = -1 + OCTAVE_OFFSET;
   else if (digitalRead(TRANSPOSE_PIN_1) == LOW)
-    new_transpose = -24;
+    new_octave = -2 + OCTAVE_OFFSET;
   else if (digitalRead(TRANSPOSE_PIN_0) == LOW)
-    new_transpose = -36;
+    new_octave = -3 + OCTAVE_OFFSET;
 
-  return new_transpose;
+  return new_octave;
 }
 
 #ifdef UI_DISPLAY
-void display_transpose(byte transpose)
+void display_octave(byte octave)
 {
-  char transpose_str[3] = "  ";
-  static byte old_transpose = -1;
+  char octave_str[3] = "  ";
+  byte disp_octave = octave;
 
-  if (transpose == old_transpose)
-    return;
-
-  old_transpose = transpose;
-
-#if 0 // a bit lengthy
-  if (transpose & 128) { /* < 0 */
-    transpose_str[0] = '-';
-    transpose = -transpose;
-  }
-  else if (transpose > 0)
-    transpose_str[0] = '+';
-  transpose /= 12;
-  transpose_str[1] = transpose + '0';
-#endif
-
-  transpose_str[0] = transpose & 128 ? '-' : (transpose > 0 ? '+' : ' ');
-  transpose_str[1] = (transpose & 128 ? (byte)-transpose : transpose) / 12 + '0';
+  if (octave < OCTAVE_OFFSET) {
+    octave_str[0] = '-';
+    disp_octave = OCTAVE_OFFSET - octave; /* always positive */
+  } else if (octave > OCTAVE_OFFSET) {
+    octave_str[0] = '+';
+    disp_octave = octave - OCTAVE_OFFSET;
+  } else
+    disp_octave = 0;
+  octave_str[1] = disp_octave + '0';
 
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
@@ -163,13 +158,13 @@ void display_transpose(byte transpose)
 
   display.setTextSize(BODY_TEXTSIZE);
   display.setCursor(BODY_X, BODY_Y);
-  display.println(transpose_str);
+  display.println(octave_str);
 
   display.display();
 }
 #endif
 
-byte apply_note_on_transpose(byte note)
+byte apply_note_on_transpose(byte note, byte channel)
 {
   byte note_transpose = transpose;
 
@@ -182,15 +177,19 @@ byte apply_note_on_transpose(byte note)
       note_transpose -= 12; /* too high, so try an octave lower */
   }
 
-  descriptors[note].transpose = note_transpose; /* save for subsequent note off */
+  note_descriptors[note] = (octave_encoded << DESC_OCTAVE_SHIFT) | channel;
 
   return note + note_transpose;
 }
 
 byte apply_note_off_transpose(byte note)
 {
-  /* Any overrange should have been taken care of at note on time, so just add the offset here */
-  return note + descriptors[note].transpose;
+  if (!note_descriptors[note]) /* hasn't been set, don't transpose */
+    return note;
+
+  note += ((note_descriptors[note] & DESC_OCTAVE_MASK) >> DESC_OCTAVE_SHIFT) * 12 - OCTAVE_OFFSET * 12;
+
+  return note;
 }
 
 /* Send status byte, honoring running status, unless fresh_status_byte is set.
@@ -240,10 +239,15 @@ void loop() {
   }
 #endif
 
-  transpose = read_transpose();
+  octave_encoded = read_octave();
+  if (octave_encoded != octave_prev) {
+    /* Courtesy calculation - so we don't need to do it for each note on */
+    transpose = octave_encoded * 12 - OCTAVE_OFFSET * 12;
 #ifdef UI_DISPLAY
-  display_transpose(transpose);
+    display_octave(octave_encoded);
 #endif
+    octave_prev = octave_encoded;
+  }
   //MIDI.read(); /* Don't use MIDI library to parse MIDI data */
   /* Normally data received is echoed at the very end of the if clause, unless for some
    * reason processing needs to be delayed (note off messages, note on messages in
@@ -302,14 +306,13 @@ void loop() {
       }
 #endif
       /* All other (channel and system) messages pass through */
-        else if (status <= REALTIME)
+      else if (status <= REALTIME)
         state = STATE_PASS;
     } else { /* MIDI data byte */
       switch (state) {
         case STATE_NOTE_ON_NOTE:
           if (low_latency_mode) {
-            descriptors[data].channel = channel + 1; /* descriptors[].channel ==  0 => none set */
-            data = apply_note_on_transpose(data);
+            data = apply_note_on_transpose(data, channel);
           } else {
             note = data; /* save for later */
             skip = true; /* don't send note number now */
@@ -331,12 +334,11 @@ void loop() {
                 Serial.write(new_status);
                 running_status = new_status;
               }
-              descriptors[note].channel = channel + 1; /* descriptors[].channel ==  0 => none set */
-              Serial.write(apply_note_on_transpose(note));
+              Serial.write(apply_note_on_transpose(note, channel));
             } else {
               /* Note off: send as note on w/ vel = 0 */
-              byte new_status = NOTE_ON | (descriptors[data].channel ?
-                                           (descriptors[data].channel - 1) :
+              byte new_status = NOTE_ON | (note_descriptors[data] ?
+                                           (note_descriptors[data] & DESC_CHANNEL_MASK) :
                                            channel);
               running_status = send_running(new_status, running_status, fresh_status_byte);
               Serial.write(apply_note_off_transpose(note));
@@ -348,8 +350,8 @@ void loop() {
 #ifdef HANDLE_CHANNEL
           /* Now it's time to send our note off status. */
           {
-            byte new_status = NOTE_OFF | (descriptors[data].channel ?
-                                          (descriptors[data].channel - 1) :
+            byte new_status = NOTE_OFF | (note_descriptors[data] ?
+                                          (note_descriptors[data] & DESC_CHANNEL_MASK) :
                                           channel);
             /* We honor running status here, as we potentially need to insert a status byte, if the
                incoming stream employs running status while the transpose is being changed, so we
