@@ -1,5 +1,7 @@
 #include <MIDI.h>
 #include <string.h>
+/* For OLED graphics: */
+#include <Adafruit_SSD1306.h>
 
 /*
  * Fast (low latency - 320 us) note transpose filter.
@@ -46,6 +48,8 @@ MIDI_CREATE_INSTANCE(HardwareSerial, Serial, MIDI);
 #define RUNNING_STATUS_TIMEOUT_US 1000000
 #endif
 
+#undef UI_DISPLAY
+
 /* Digital pins 0 and 1 are used for (MIDI) serial communication, so use digital I/O
    2 and upwards for the transpose switch input.
 */
@@ -72,6 +76,24 @@ MIDI_CREATE_INSTANCE(HardwareSerial, Serial, MIDI);
 #define NOTE_ON 144
 #define CONTROL_CHANGE 176
 #define REALTIME 248 /* This and above */
+
+#ifdef UI_DISPLAY
+
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+
+#define HEADER_X 0
+#define HEADER_Y 0
+#define HEADER_TEXTSIZE 2
+#define BODY_X 2
+#define BODY_Y 24
+#define BODY_TEXTSIZE 4
+
+// Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
+#define SSD1306_I2C_ADDRESS 0x3c
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire);
+
+#endif
 
 byte transpose = 0;
 bool low_latency_mode = true;
@@ -106,6 +128,46 @@ byte read_transpose(void)
 
   return new_transpose;
 }
+
+#ifdef UI_DISPLAY
+void display_transpose(byte transpose)
+{
+  char transpose_str[3] = "  ";
+  static byte old_transpose = -1;
+
+  if (transpose == old_transpose)
+    return;
+
+  old_transpose = transpose;
+
+#if 0 // a bit lengthy
+  if (transpose & 128) { /* < 0 */
+    transpose_str[0] = '-';
+    transpose = -transpose;
+  }
+  else if (transpose > 0)
+    transpose_str[0] = '+';
+  transpose /= 12;
+  transpose_str[1] = transpose + '0';
+#endif
+
+  transpose_str[0] = transpose & 128 ? '-' : (transpose > 0 ? '+' : ' ');
+  transpose_str[1] = (transpose & 128 ? (byte)-transpose : transpose) / 12 + '0';
+
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+
+  display.setTextSize(HEADER_TEXTSIZE);
+  display.setCursor(HEADER_X, HEADER_Y);
+  display.println("Octave");
+
+  display.setTextSize(BODY_TEXTSIZE);
+  display.setCursor(BODY_X, BODY_Y);
+  display.println(transpose_str);
+
+  display.display();
+}
+#endif
 
 byte apply_note_on_transpose(byte note)
 {
@@ -146,6 +208,10 @@ byte send_running(byte status, byte running_status, bool fresh_status_byte)
 void setup() {
   // put your setup code here, to run once:
   MIDI.begin(MIDI_CHANNEL_OMNI);  // Listen to all incoming messages
+#ifdef UI_DISPLAY
+  display.begin(SSD1306_SWITCHCAPVCC, SSD1306_I2C_ADDRESS);
+#endif
+
   pinMode(TRANSPOSE_PIN_0, INPUT_PULLUP);
   pinMode(TRANSPOSE_PIN_1, INPUT_PULLUP);
   pinMode(TRANSPOSE_PIN_2, INPUT_PULLUP);
@@ -153,6 +219,7 @@ void setup() {
   pinMode(TRANSPOSE_PIN_4, INPUT_PULLUP);
   pinMode(TRANSPOSE_PIN_5, INPUT_PULLUP);
   pinMode(LED_BUILTIN, OUTPUT);
+
   running_status_time = led_flash_time = micros();
 }
 
@@ -174,6 +241,9 @@ void loop() {
 #endif
 
   transpose = read_transpose();
+#ifdef UI_DISPLAY
+  display_transpose(transpose);
+#endif
   //MIDI.read(); /* Don't use MIDI library to parse MIDI data */
   /* Normally data received is echoed at the very end of the if clause, unless for some
    * reason processing needs to be delayed (note off messages, note on messages in
