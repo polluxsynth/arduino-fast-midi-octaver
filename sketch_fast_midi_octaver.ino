@@ -1,4 +1,3 @@
-#include <MIDI.h>
 #include <string.h>
 /* For OLED graphics: */
 #include <Adafruit_SSD1306.h>
@@ -24,10 +23,6 @@
    - When SKIP_CC is set, skips all CC 22, 23 and 24 messages. This feature adds
      320 us of latency to all passing CC messages.
 */
-
-// Create and bind the MIDI interface to the default hardware Serial port
-//MIDI_CREATE_DEFAULT_INSTANCE();
-MIDI_CREATE_INSTANCE(HardwareSerial, Serial, MIDI);
 
 /* Define in order to remember note on channel when setting note offs in low latency mode.
  * (channel is always remembered in normal latency mode as it doesn't add any latency).
@@ -206,7 +201,7 @@ byte send_running(byte status, byte running_status, bool fresh_status_byte)
 
 void setup() {
   // put your setup code here, to run once:
-  MIDI.begin(MIDI_CHANNEL_OMNI);  // Listen to all incoming messages
+  Serial.begin(31250);
 #ifdef UI_DISPLAY
   display.begin(SSD1306_SWITCHCAPVCC, SSD1306_I2C_ADDRESS);
 #endif
@@ -248,7 +243,6 @@ void loop() {
 #endif
     octave_prev = octave_encoded;
   }
-  //MIDI.read(); /* Don't use MIDI library to parse MIDI data */
   /* Normally data received is echoed at the very end of the if clause, unless for some
    * reason processing needs to be delayed (note off messages, note on messages in
    * normal latency mode, control change messages when SKIP_CC_22 is set), in which
