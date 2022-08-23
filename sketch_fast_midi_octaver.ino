@@ -43,7 +43,7 @@
 #define RUNNING_STATUS_TIMEOUT_US 1000000
 #endif
 
-#undef UI_DISPLAY
+#define UI_DISPLAY
 
 #define OCTAVE_OFFSET 4 /* e.g. octave -3 => encoded octave value is 1 */
 
