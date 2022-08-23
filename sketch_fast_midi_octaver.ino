@@ -37,7 +37,10 @@
  */
 //#define SKIP_CC "\026\027\030" /* CC 22, 23, 24 */
 
-#if defined(SKIP_CC)
+/* Convert sustain pedal to delayed note offs. */
+#define SUSTAIN_TO_NOTE_OFF
+
+#if defined(SKIP_CC) || defined(SUSTAIN_TO_NOTE_OFF)
 #define PROCESS_CC
 #endif
 
@@ -76,6 +79,7 @@
 #define NOTE_OFF 128
 #define NOTE_ON 144
 #define CONTROL_CHANGE 176
+#define CC_SUSTAIN_PEDAL 64
 #define REALTIME 248 /* This and above */
 
 #ifdef UI_DISPLAY
@@ -176,6 +180,7 @@ byte apply_note_on_transpose(byte note, byte channel)
       note_transpose -= 12; /* too high, so try an octave lower */
   }
 
+  /* This also clears the DESC_SUSTAIN bit. */
   note_descriptors[note] = (octave_encoded << DESC_OCTAVE_SHIFT) | channel;
 
   return note + note_transpose;
@@ -263,6 +268,7 @@ void loop() {
 #ifdef PROCESS_CC
     static bool skipping_cc = false;
 #endif
+    static bool sustaining = false;
     byte data = Serial.read();
     bool skip = false;
 
@@ -296,6 +302,8 @@ void loop() {
         */
         skip = true; /* defer sending status byte until we have received note number. */
 #endif
+        if (sustaining)
+          skip == true;
       }
 #ifdef PROCESS_CC
         else if (status == CONTROL_CHANGE) {
@@ -322,8 +330,13 @@ void loop() {
                outgoing message, as we have already sent the note number, so just ride with it
                (hope the transposition has not been changed since corresponding note on was sent).
             */
-            if (data == 0)
+            if (data == 0) {
               low_latency_mode = false;
+              if (sustaining) {
+                skip = true;
+                note_descriptors[data] |= DESC_SUSTAIN;
+              }
+            }
           } else { /* !low_latency_mode */
             if (data) {
               /* Note on: Time to send note on message: send status + note no here, vel further on */
@@ -334,34 +347,47 @@ void loop() {
               }
               Serial.write(apply_note_on_transpose(note, channel));
             } else {
-              /* Note off: send as note on w/ vel = 0 */
-              byte new_status = NOTE_ON | (note_descriptors[data] ?
-                                           (note_descriptors[data] & DESC_CHANNEL_MASK) :
-                                           channel);
-              running_status = send_running(new_status, running_status, fresh_status_byte);
-              Serial.write(apply_note_off_transpose(note));
+              if (sustaining) {
+                skip = true;
+                note_descriptors[data] |= DESC_SUSTAIN; /* indicate note off received and skipped */
+              } else {
+                /* Note off: send as note on w/ vel = 0 */
+                byte new_status = NOTE_ON | (note_descriptors[data] ?
+                                             (note_descriptors[data] & DESC_CHANNEL_MASK) :
+                                             channel);
+                running_status = send_running(new_status, running_status, fresh_status_byte);
+                Serial.write(apply_note_off_transpose(note));
+              }
             }
           }
           fresh_status_byte = false; /* next non-status byte received will employ running status */
           break;
         case STATE_NOTE_OFF_NOTE:
+          if (sustaining) {
+            skip = true;
+            note_descriptors[data] |= DESC_SUSTAIN; /* indicate note off received and skipped */
+          } else {
 #ifdef HANDLE_CHANNEL
-          /* Now it's time to send our note off status. */
-          {
-            byte new_status = NOTE_OFF | (note_descriptors[data] ?
-                                          (note_descriptors[data] & DESC_CHANNEL_MASK) :
-                                          channel);
-            /* We honor running status here, as we potentially need to insert a status byte, if the
-               incoming stream employs running status while the transpose is being changed, so we
-               want to minimize the number of inserted bytes added.
-            */
-            running_status = send_running(new_status, running_status, fresh_status_byte);
-          }
+            /* Now it's time to send our note off status. */
+            {
+              byte new_status = NOTE_OFF | (note_descriptors[data] ?
+                                            (note_descriptors[data] & DESC_CHANNEL_MASK) :
+                                            channel);
+               /* We honor running status here, as we potentially need to insert a status byte, if the
+                  incoming stream employs running status while the transpose is being changed, so we
+                  want to minimize the number of inserted bytes added.
+                */
+              running_status = send_running(new_status, running_status, fresh_status_byte);
+            }
 #endif
-          data = apply_note_off_transpose(data);
+            data = apply_note_off_transpose(data);
+          }
           break;
         case STATE_NOTE_OFF_VEL:
-          fresh_status_byte = false; /* next non-status will employ running status */
+          if (sustaining)
+            skip = true;
+          else
+            fresh_status_byte = false; /* next non-status will employ running status */
           break;
 #ifdef PROCESS_CC
         case STATE_CC_ADDR:
@@ -369,6 +395,9 @@ void loop() {
           skipping_cc = false;
 #ifdef SKIP_CC
           skipping_cc |= (!!data && !!strchr(SKIP_CC, data));
+#endif
+#ifdef SUSTAIN_TO_NOTE_OFF
+          skipping_cc |= (data == CC_SUSTAIN_PEDAL);
 #endif
           if (skipping_cc)
             skip = true;
@@ -382,6 +411,29 @@ void loop() {
         case STATE_CC_VAL:
           if (skipping_cc)
             skip = true;
+#ifdef SUSTAIN_TO_NOTE_OFF
+          if (addr == CC_SUSTAIN_PEDAL) {
+            if (data)
+              sustaining = true;
+            else {
+              /* pedal released. Time to released all sustained notes. */
+              byte note;
+              sustaining = false;
+
+              for (note = 0; note < 128; note++) {
+                if (note_descriptors[note] & DESC_SUSTAIN) {
+                  byte new_status = NOTE_ON | (note_descriptors[note] & DESC_CHANNEL_MASK);
+
+                  note_descriptors[note] &= ~DESC_SUSTAIN; /* clear sustain bit */
+                  // Todo: fix saved note off velocity
+                  running_status = send_running(new_status, running_status, fresh_status_byte);
+                  Serial.write(apply_note_off_transpose(note));
+                  Serial.write(0); /* vel = 0 >= note off */
+                }
+              }
+            }
+          }
+#endif
           break;
 #endif
         default: /* Do nothing, just echo byte received */
