@@ -37,6 +37,10 @@
  */
 //#define SKIP_CC "\026\027\030" /* CC 22, 23, 24 */
 
+#if defined(SKIP_CC)
+#define PROCESS_CC
+#endif
+
 #undef MIRROR_INCOMING_RUNNING_STATUS
 /* Every second, reset running status to avoid long periods without status on output */
 #ifndef MIRROR_INCOMING_RUNNING_STATUS
@@ -245,7 +249,7 @@ void loop() {
   }
   /* Normally data received is echoed at the very end of the if clause, unless for some
    * reason processing needs to be delayed (note off messages, note on messages in
-   * normal latency mode, control change messages when SKIP_CC_22 is set), in which
+   * normal latency mode, control change messages when PROCESS_CC is set), in which
    * case the normal echoing of data is skipped and deferred until some later pass,
    * and the queued-up status and potentially first data byte are echoed then, followed by
    * the normal echoing of the final data byte.
@@ -256,7 +260,7 @@ void loop() {
     static byte note; /* saved note across note on/off message reception, in !low_latency_mode */
     static byte addr; /* saved control change address */
     static bool fresh_status_byte = false; /* no current input running status */
-#ifdef SKIP_CC
+#ifdef PROCESS_CC
     static bool skipping_cc = false;
 #endif
     byte data = Serial.read();
@@ -293,7 +297,7 @@ void loop() {
         skip = true; /* defer sending status byte until we have received note number. */
 #endif
       }
-#ifdef SKIP_CC
+#ifdef PROCESS_CC
         else if (status == CONTROL_CHANGE) {
         state = STATE_CC_ADDR;
         skip = true;
@@ -359,9 +363,13 @@ void loop() {
         case STATE_NOTE_OFF_VEL:
           fresh_status_byte = false; /* next non-status will employ running status */
           break;
-#ifdef SKIP_CC
+#ifdef PROCESS_CC
         case STATE_CC_ADDR:
-          skipping_cc = (!!data && !!strchr(SKIP_CC, data));
+          addr = data;
+          skipping_cc = false;
+#ifdef SKIP_CC
+          skipping_cc |= (!!data && !!strchr(SKIP_CC, data));
+#endif
           if (skipping_cc)
             skip = true;
           else {
