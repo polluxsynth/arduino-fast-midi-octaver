@@ -196,17 +196,38 @@ byte apply_note_off_transpose(byte note)
   return note;
 }
 
-/* Send status byte, honoring running status, unless fresh_status_byte is set.
- * Return new running status (may be unchanged).
- */
-byte send_running(byte status, byte running_status, bool fresh_status_byte)
-{
-  if (status != running_status || fresh_status_byte) {
-    Serial.write(status);
-    return status;
+class RunningStatus {
+
+public:
+  /* Constructor */
+  RunningStatus(void)
+  {
+    m_running_status = 0;
+    m_fresh_status_byte = 0;
   }
-  return running_status;
-}
+
+  /* Send status byte, honoring running status, unless fresh_status_byte is set.
+   * Return new running status (may be unchanged).
+   */
+  void send(byte status, bool fresh_status_byte)
+  {
+    if (status != m_running_status || fresh_status_byte) {
+      m_running_status = status;
+      Serial.write(status);
+    }
+  }
+
+  void clear(void)
+  {
+    m_running_status = 0;
+  }
+
+private:
+  byte m_running_status;
+  bool m_fresh_status_byte;
+};
+
+RunningStatus running_status;
 
 void setup() {
   // put your setup code here, to run once:
@@ -224,11 +245,11 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
 
   running_status_time = led_flash_time = micros();
+  running_status.clear(); /* outgoing running status */
 }
 
 void loop() {
   long int now = micros();
-  static byte running_status = 0; /* outgoing running status */
 
   // put your main code here, to run repeatedly:
   /* Turn led off at end of flash period */
@@ -238,7 +259,7 @@ void loop() {
 #ifdef RUNNING_STATUS_TIMEOUT_US
   if (now - running_status_time > RUNNING_STATUS_TIMEOUT_US)
   {
-    running_status = 0; /* clear running status, forcing next message status byte to be sent */
+    running_status.clear(); /* force next message status byte to be sent */
     running_status_time = now; /* reset timer */
   }
 #endif
@@ -341,10 +362,7 @@ void loop() {
             if (data) {
               /* Note on: Time to send note on message: send status + note no here, vel further on */
               byte new_status = NOTE_ON | channel;
-              if (new_status != running_status || fresh_status_byte) {
-                Serial.write(new_status);
-                running_status = new_status;
-              }
+              running_status.send(new_status, fresh_status_byte);
               Serial.write(apply_note_on_transpose(note, channel));
             } else {
               if (sustaining) {
@@ -355,7 +373,7 @@ void loop() {
                 byte new_status = NOTE_ON | (note_descriptors[data] ?
                                              (note_descriptors[data] & DESC_CHANNEL_MASK) :
                                              channel);
-                running_status = send_running(new_status, running_status, fresh_status_byte);
+                running_status.send(new_status, fresh_status_byte);
                 Serial.write(apply_note_off_transpose(note));
               }
             }
@@ -377,7 +395,7 @@ void loop() {
                   incoming stream employs running status while the transpose is being changed, so we
                   want to minimize the number of inserted bytes added.
                 */
-              running_status = send_running(new_status, running_status, fresh_status_byte);
+              running_status.send(new_status, fresh_status_byte);
             }
 #endif
             data = apply_note_off_transpose(data);
@@ -405,7 +423,7 @@ void loop() {
             /* We've got CC + address, so send it on */
             /* Value will be sent when we get it */
             byte new_status = CONTROL_CHANGE | channel;
-            running_status = send_running(new_status, running_status, fresh_status_byte);
+            running_status.send(new_status, fresh_status_byte);
           }
           break;
         case STATE_CC_VAL:
@@ -426,7 +444,7 @@ void loop() {
 
                   note_descriptors[note] &= ~DESC_SUSTAIN; /* clear sustain bit */
                   // Todo: fix saved note off velocity
-                  running_status = send_running(new_status, running_status, fresh_status_byte);
+                  running_status.send(new_status, fresh_status_byte);
                   Serial.write(apply_note_off_transpose(note));
                   Serial.write(0); /* vel = 0 >= note off */
                 }
@@ -450,21 +468,17 @@ void loop() {
         default: break;
       }
     }
-#if 1
-    /* Running status */
-    /* Check bit 7, so we can set running_status to 0 to disable it if we want, without
-       the consequence being that we skip data bytes that have that value.
-    */
-    if ((data & 0x80) && data == running_status && !fresh_status_byte)
-      skip = true;
-#endif
     if (!skip) {
-      Serial.write(data);
-      if ((data & 0x80) && data < 248) /* Status messages that are not realtime */
-        if (data < 240)
-          running_status = data;
-        else
-          running_status = 0; /* disable running status for non-channel messages (sysex, spp etc) */
+      if ((data & 0x80) && data < 248) { /* Status messages that are not realtime */
+        if (data < 240) {
+          running_status.send(data, fresh_status_byte);
+        } else {
+          Serial.write(data);
+          running_status.clear();
+        }
+      } else {
+        Serial.write(data); /* realtime or data byte */
+      }
     }
   }
 }
