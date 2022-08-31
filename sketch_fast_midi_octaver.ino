@@ -188,12 +188,17 @@ byte apply_note_on_transpose(byte note, byte channel)
 
 byte apply_note_off_transpose(byte note)
 {
+  byte ret = note;
+
   if (!note_descriptors[note]) /* hasn't been set, don't transpose */
     return note;
 
-  note += ((note_descriptors[note] & DESC_OCTAVE_MASK) >> DESC_OCTAVE_SHIFT) * 12 - OCTAVE_OFFSET * 12;
+  ret += ((note_descriptors[note] & DESC_OCTAVE_MASK) >> DESC_OCTAVE_SHIFT) * 12 - OCTAVE_OFFSET * 12;
 
-  return note;
+  /* Mark the note as released */
+  note_descriptors[note] = 0;
+
+  return ret;
 }
 
 class RunningStatus {
@@ -441,8 +446,6 @@ void loop() {
               for (note = 0; note < 128; note++) {
                 if (note_descriptors[note] & DESC_SUSTAIN) {
                   byte new_status = NOTE_ON | (note_descriptors[note] & DESC_CHANNEL_MASK);
-
-                  note_descriptors[note] &= ~DESC_SUSTAIN; /* clear sustain bit */
                   // Todo: fix saved note off velocity
                   running_status.send(new_status, fresh_status_byte);
                   Serial.write(apply_note_off_transpose(note));
