@@ -39,6 +39,13 @@
 
 /* Convert sustain pedal to delayed note offs. */
 #define SUSTAIN_TO_NOTE_OFF
+/* When repeated notes received while sustaing for the same note with the same transpose/channel
+ * as previous note, send note off to avoid stacking up voices.
+ * This should be a run time adjustable option. */
+#define SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE
+/* Set this to release all sustained notes whenever a note is received with a channel and/or
+ * transpose setting differing from the previous note received. */
+#undef RELEASE_ALL_NOTES_WHEN_CHANNEL_OR_OCTAVE_CHANGED
 
 #if defined(SKIP_CC) || defined(SUSTAIN_TO_NOTE_OFF)
 #define PROCESS_CC
@@ -115,6 +122,12 @@ long int running_status_time;
 
 byte note_descriptors[128] = { 0 };
 
+struct note {
+  byte status;
+  byte note;
+  byte vel;
+};
+
 byte read_octave(void)
 {
   byte new_octave = octave_encoded;
@@ -186,17 +199,15 @@ byte apply_note_on_transpose(byte note, byte channel)
   return note + note_transpose;
 }
 
-byte apply_note_off_transpose(byte note)
+byte apply_note_off_transpose(byte note, bool clear_descriptor_entry)
 {
   byte ret = note;
 
-  if (!note_descriptors[note]) /* hasn't been set, don't transpose */
-    return note;
+  if (note_descriptors[note]) /* only perform transpose if descriptor has been set */
+    ret += ((note_descriptors[note] & DESC_OCTAVE_MASK) >> DESC_OCTAVE_SHIFT) * 12 - OCTAVE_OFFSET * 12;
 
-  ret += ((note_descriptors[note] & DESC_OCTAVE_MASK) >> DESC_OCTAVE_SHIFT) * 12 - OCTAVE_OFFSET * 12;
-
-  /* Mark the note as released */
-  note_descriptors[note] = 0;
+  if (clear_descriptor_entry)/* Mark the note as released */
+    note_descriptors[note] = 0;
 
   return ret;
 }
@@ -212,20 +223,22 @@ public:
   }
 
   /* Send status byte, honoring running status, unless fresh_status_byte is set.
-   * Return new running status (may be unchanged).
+   * Return true if byte was actually sent, false otherwise
    */
-  void send(byte status, bool fresh_status_byte)
+  bool send(byte status, bool fresh_status_byte)
   {
     if (status != m_running_status || fresh_status_byte) {
       m_running_status = status;
       Serial.write(status);
+      return true;
     }
+    return false;
   }
 
   /* When fresh_status_byte not set it defaults to false */
-  void send(byte status)
+  bool send(byte status)
   {
-    send(status, false);
+    return send(status, false);
   }
 
   void clear(void)
@@ -240,19 +253,25 @@ private:
 
 RunningStatus running_status;
 
-void release_sustained_notes(void)
+/* Release all notes marked as sustained in the desciptor list.
+ * Return true of something actually was sent.
+ */
+bool release_sustained_notes(void)
 {
   byte note;
+  bool something_sent = false;
 
   for (note = 0; note < 128; note++) {
     if (note_descriptors[note] & DESC_SUSTAIN) {
       byte new_status = NOTE_ON | (note_descriptors[note] & DESC_CHANNEL_MASK);
       // Todo: fix saved note off velocity
       running_status.send(new_status);
-      Serial.write(apply_note_off_transpose(note));
+      Serial.write(apply_note_off_transpose(note, true));
       Serial.write(0); /* vel = 0 >= note off */
+      something_sent = true;
     }
   }
+  return something_sent;
 }
 
 void setup() {
@@ -307,17 +326,21 @@ void loop() {
    * the normal echoing of the final data byte.
    */
   if (Serial.available()) {
-    static byte channel; /* last received channel */
+    static byte channel, prev_channel = -1; /* last received channel, and one for previous note on */
+    static byte prev_octave_encoded = -1; /* transposition for previous note on */
     static byte state = STATE_PASS;
     static byte note; /* saved note across note on/off message reception, in !low_latency_mode */
     static byte addr; /* saved control change address */
     static bool fresh_status_byte = false; /* no current input running status */
+    static struct note queued_note_off = { 0 };
 #ifdef PROCESS_CC
     static bool skipping_cc = false;
 #endif
     static bool sustaining = false;
+    static bool insert_note_off = false;
     byte data = Serial.read();
     bool skip = false;
+    bool trigger_queued_note_off = false;
 
     /* Flash led = turn it on here, and set timeout */
     digitalWrite(LED_BUILTIN, HIGH ^ !low_latency_mode);
@@ -335,6 +358,23 @@ void loop() {
          through.
       */
       if (status == NOTE_ON) {
+#ifdef RELEASE_ALL_NOTES_WHEN_CHANNEL_OR_OCTAVE_CHANGED
+        if (channel != prev_channel || octave_encoded != prev_octave_encoded) {
+          /* We got a note on on a different channel or which will have a different tranposition
+           * than the previous one received. If there are sustained notes, release them, as we
+           * won't be able to keep track of them if a key is pressed corresponding to an
+           * already sustained note, and we want a consistent behavior so the release of sustained
+           * notes happen seemingly haphazardly (i.e. depending on the actual notes depressed).
+           */
+           release_sustained_notes();
+           /* Signal to subsequent note number processing that notes have been released and thus
+            * don't need to be released again; in particular, that no additional status byte be
+            * sent after the note offs.
+            */
+           prev_channel = channel;
+           prev_octave_encoded = octave_encoded;
+        }
+#endif
         if (!low_latency_mode)
           skip = true;
         state = STATE_NOTE_ON_NOTE; /* next byte will be note */
@@ -364,10 +404,80 @@ void loop() {
     } else { /* MIDI data byte */
       switch (state) {
         case STATE_NOTE_ON_NOTE:
+#ifdef RELEASE_ALL_NOTES_WHEN_CHANNEL_OR_OCTAVE_CHANGED
+          if (octave_encoded != prev_octave_encoded) {
+            /* This is where we handle a changed octave while experiencing incoming running status.
+             * If we were not experiencing incoming running status, this would have been handled
+             * higher up, when the status byte was received (in which case we also need to handle
+             * the case of the channel being changed; this cannot happen with running status).
+             * If we get here, thus, we are experiencing running status, and no byte for the currently
+             * incoming message has yet been sent; thus we can send all the note offs for the
+             * sustained notes now in order to release them. However, we then have to reinstate
+             * the potentially different status byte than the one sent for the note offs, but we
+             * do that anyway further down, so no special handling is needed for that case here.
+             */
+            release_sustained_notes();
+            prev_octave_encoded = octave_encoded;
+          }
+#endif
+          /* If we find that there is already an active note for the source note number,
+           * send a note off message. This means that the note is sustained, as otherwise when we
+           * would have received a note off for it, the entry in the list would have been cleared
+           * (or the source keyboard sent two note ons without an intermediate note off).
+           */
+          if (note_descriptors[data]) {
+            bool same_chtr =
+              ((note_descriptors[data] & DESC_CHANNEL_MASK) == channel &&
+               ((note_descriptors[data] & DESC_OCTAVE_MASK) >> DESC_OCTAVE_SHIFT) == octave_encoded);
+            /* We actually don't know if this is a note on or off we're receiving, but we
+             * need update the note_descriptor this time around in low latency mode when we
+             * receive the note number, so we can't wait with applying note off transposition.
+             * However, if it really was a note off, we can then just send out the queued_note_off
+             * in the normal course of things. */
+             if (!same_chtr) {
+              queued_note_off.status = 144 | (note_descriptors[data] & DESC_CHANNEL_MASK);
+              queued_note_off.note = apply_note_off_transpose(data, true);
+             }
+#ifdef SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE
+               else {
+               /* We need to insert a note off before sending the note on. If the channel/transpose
+                * differs, we send it after the current note, as we've already echoed the status
+                * byte for the ongoing note on, so we can't send note off on a different channel
+                * if we insert it here. */
+               insert_note_off = true;
+               queued_note_off.status = 144 | channel;
+               queued_note_off.note = apply_note_off_transpose(data, false);
+             }
+#endif
+          }
+          /* Here's the rub: not only might we have sent note offs on a different channel than
+           * is currently being received, after sending a previous note on we might have transmitted
+           * a note off on a different channel (a queued_note_off). As a precaution, we therefore
+           * send a note on here, but the byte is actually only transmitted if necessary due to
+           * outgoing running status (which we enforce here, as any fresh status bytes received
+           * from the source will already have been sent on).
+           */
+          running_status.send(NOTE_ON | channel);
+          note = data; /* save for later */
           if (low_latency_mode) {
+            if (insert_note_off) {
+            //if (1) {
+              /* Same channel and transpose. Send a note off immediately to avoid the voices
+               * stacking up, which is nice, but can cause synths to run out of voices (depending
+               * on how the voice allocation algorithm is implemented).
+               * Todo: Have this as a switchable option, also as it adds latency.
+               */
+               Serial.write(queued_note_off.note);
+               Serial.write(0); /* note off */
+               queued_note_off.status = 0; /* disable queued note off, as it was sent here */
+               insert_note_off = false;
+               /* We now proceed with the currently ongoing message, and rely on running status
+                * to just have to send the note number in this loop iteration, and the velocity
+                * when it arrives.
+                */
+            }
             data = apply_note_on_transpose(data, channel);
           } else {
-            note = data; /* save for later */
             skip = true; /* don't send note number now */
           }
           break;
@@ -385,22 +495,34 @@ void loop() {
               }
             }
           } else { /* !low_latency_mode */
-            if (data) {
+            if (data) { /* true note on */
+              if (insert_note_off) {
+                Serial.write(queued_note_off.note);
+                Serial.write(0);
+                queued_note_off.status = 0;
+                insert_note_off = false;
+              }
               /* Note on: Time to send note on message: send status + note no here, vel further on */
               byte new_status = NOTE_ON | channel;
               running_status.send(new_status, fresh_status_byte);
               Serial.write(apply_note_on_transpose(note, channel));
-            } else {
+            } else { /* note off */
               if (sustaining) {
                 skip = true;
                 note_descriptors[data] |= DESC_SUSTAIN; /* indicate note off received and skipped */
               } else {
                 /* Note off: send as note on w/ vel = 0 */
-                byte new_status = NOTE_ON | (note_descriptors[data] ?
-                                             (note_descriptors[data] & DESC_CHANNEL_MASK) :
-                                             channel);
-                running_status.send(new_status, fresh_status_byte);
-                Serial.write(apply_note_off_transpose(note));
+                if (queued_note_off.status) { /* Potentially set when note received */
+                  running_status.send(queued_note_off.status, fresh_status_byte);
+                  Serial.write(queued_note_off.note);
+                  queued_note_off.status = 0; /* Don't need queue note off now */
+                } else {
+                  byte new_status = NOTE_ON | (note_descriptors[data] ?
+                                               (note_descriptors[data] & DESC_CHANNEL_MASK) :
+                                               channel);
+                  running_status.send(new_status, fresh_status_byte);
+                  Serial.write(apply_note_off_transpose(note, true));
+                }
               }
             }
           }
@@ -424,7 +546,7 @@ void loop() {
               running_status.send(new_status, fresh_status_byte);
             }
 #endif
-            data = apply_note_off_transpose(data);
+            data = apply_note_off_transpose(data, true);
           }
           break;
         case STATE_NOTE_OFF_VEL:
@@ -474,7 +596,12 @@ void loop() {
       /* Manage state transitions */
       switch (state) {
         case STATE_NOTE_ON_NOTE: state = STATE_NOTE_ON_VEL; break;
-        case STATE_NOTE_ON_VEL: state = STATE_NOTE_ON_NOTE; break;
+        case STATE_NOTE_ON_VEL: state = STATE_NOTE_ON_NOTE;
+                                /* If a note off has been queued, send it after the velocity byte
+                                 * has been sent. */
+                                if (queued_note_off.status)
+                                  trigger_queued_note_off = true;
+                                break;
         case STATE_NOTE_OFF_NOTE: state = STATE_NOTE_OFF_VEL; break;
         case STATE_NOTE_OFF_VEL: state = STATE_NOTE_OFF_NOTE; break;
         case STATE_CC_ADDR: state = STATE_CC_VAL; break;
@@ -493,6 +620,14 @@ void loop() {
       } else {
         Serial.write(data); /* realtime or data byte */
       }
+    }
+    if (trigger_queued_note_off) {
+      /* When we end up here, it's because we've just sent a note on, and need to send a note off
+       * for the note previously occupying the note descriptor, to avoid it hanging. */
+      running_status.send(queued_note_off.status);
+      Serial.write(queued_note_off.note);
+      Serial.write(0); /* => note off */
+      queued_note_off.status = 0;
     }
   }
 }
