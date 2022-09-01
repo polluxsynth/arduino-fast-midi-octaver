@@ -222,6 +222,12 @@ public:
     }
   }
 
+  /* When fresh_status_byte not set it defaults to false */
+  void send(byte status)
+  {
+    send(status, false);
+  }
+
   void clear(void)
   {
     m_running_status = 0;
@@ -233,6 +239,21 @@ private:
 };
 
 RunningStatus running_status;
+
+void release_sustained_notes(void)
+{
+  byte note;
+
+  for (note = 0; note < 128; note++) {
+    if (note_descriptors[note] & DESC_SUSTAIN) {
+      byte new_status = NOTE_ON | (note_descriptors[note] & DESC_CHANNEL_MASK);
+      // Todo: fix saved note off velocity
+      running_status.send(new_status);
+      Serial.write(apply_note_off_transpose(note));
+      Serial.write(0); /* vel = 0 >= note off */
+    }
+  }
+}
 
 void setup() {
   // put your setup code here, to run once:
@@ -440,18 +461,8 @@ void loop() {
               sustaining = true;
             else {
               /* pedal released. Time to released all sustained notes. */
-              byte note;
               sustaining = false;
-
-              for (note = 0; note < 128; note++) {
-                if (note_descriptors[note] & DESC_SUSTAIN) {
-                  byte new_status = NOTE_ON | (note_descriptors[note] & DESC_CHANNEL_MASK);
-                  // Todo: fix saved note off velocity
-                  running_status.send(new_status, fresh_status_byte);
-                  Serial.write(apply_note_off_transpose(note));
-                  Serial.write(0); /* vel = 0 >= note off */
-                }
-              }
+              release_sustained_notes();
             }
           }
 #endif
