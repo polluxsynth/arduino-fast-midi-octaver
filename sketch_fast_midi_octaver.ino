@@ -37,8 +37,9 @@
  */
 //#define SKIP_CC "\026\027\030" /* CC 22, 23, 24 */
 
-/* Convert sustain pedal to delayed note offs. */
+/* Convert sustain pedal to delayed note offs - Sustain Pedal Emulation mode. */
 #define SUSTAIN_TO_NOTE_OFF
+/* Sub modes: */
 /* When repeated notes received while sustaing for the same note with the same transpose/channel
  * as previous note, send note off to avoid stacking up voices.
  * This should be a run time adjustable option. */
@@ -337,7 +338,6 @@ void loop() {
     static bool skipping_cc = false;
 #endif
     static bool sustaining = false;
-    static bool insert_note_off = false;
     byte data = Serial.read();
     bool skip = false;
     bool trigger_queued_note_off = false;
@@ -420,64 +420,51 @@ void loop() {
             prev_octave_encoded = octave_encoded;
           }
 #endif
-          /* If we find that there is already an active note for the source note number,
-           * send a note off message. This means that the note is sustained, as otherwise when we
-           * would have received a note off for it, the entry in the list would have been cleared
-           * (or the source keyboard sent two note ons without an intermediate note off).
-           */
-          if (note_descriptors[data]) {
-            bool same_chtr =
-              ((note_descriptors[data] & DESC_CHANNEL_MASK) == channel &&
-               ((note_descriptors[data] & DESC_OCTAVE_MASK) >> DESC_OCTAVE_SHIFT) == octave_encoded);
-            /* We actually don't know if this is a note on or off we're receiving, but we
-             * need update the note_descriptor this time around in low latency mode when we
-             * receive the note number, so we can't wait with applying note off transposition.
-             * However, if it really was a note off, we can then just send out the queued_note_off
-             * in the normal course of things. */
-             if (!same_chtr) {
-              queued_note_off.status = 144 | (note_descriptors[data] & DESC_CHANNEL_MASK);
-              queued_note_off.note = apply_note_off_transpose(data, true);
-             }
-#ifdef SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE
-               else {
-               /* We need to insert a note off before sending the note on. If the channel/transpose
-                * differs, we send it after the current note, as we've already echoed the status
-                * byte for the ongoing note on, so we can't send note off on a different channel
-                * if we insert it here. */
-               insert_note_off = true;
-               queued_note_off.status = 144 | channel;
-               queued_note_off.note = apply_note_off_transpose(data, false);
-             }
-#endif
-          }
-          /* Here's the rub: not only might we have sent note offs on a different channel than
-           * is currently being received, after sending a previous note on we might have transmitted
-           * a note off on a different channel (a queued_note_off). As a precaution, we therefore
-           * send a note on here, but the byte is actually only transmitted if necessary due to
-           * outgoing running status (which we enforce here, as any fresh status bytes received
-           * from the source will already have been sent on).
-           */
-          running_status.send(NOTE_ON | channel);
-          note = data; /* save for later */
+          note = data; /* also save for later */
           if (low_latency_mode) {
-            if (insert_note_off) {
-            //if (1) {
-              /* Same channel and transpose. Send a note off immediately to avoid the voices
-               * stacking up, which is nice, but can cause synths to run out of voices (depending
-               * on how the voice allocation algorithm is implemented).
-               * Todo: Have this as a switchable option, also as it adds latency.
-               */
-               Serial.write(queued_note_off.note);
-               Serial.write(0); /* note off */
-               queued_note_off.status = 0; /* disable queued note off, as it was sent here */
-               insert_note_off = false;
-               /* We now proceed with the currently ongoing message, and rely on running status
-                * to just have to send the note number in this loop iteration, and the velocity
-                * when it arrives.
-                */
+            /* Here's the rub: not only might we have sent note offs on a different channel than
+             * is currently being received, after sending a previous note on we might have transmitted
+             * a note off on a different channel (a queued_note_off). As a precaution, we therefore
+             * send a note on here, but the byte is actually only transmitted if necessary due to
+             * outgoing running status (which we enforce here, as any fresh status bytes received
+             * from the source will already have been sent on).
+             */
+            running_status.send(NOTE_ON | channel);
+            /* If we find that there is already an active note for the source note number,
+             * send a note off message. This means that the note is sustained, as otherwise when we
+             * would have received a note off for it, the entry in the list would have been cleared
+             * (or the source keyboard sent two note ons without an intermediate note off).
+             */
+            if (note_descriptors[note]) {
+              bool same_chtr =
+                ((note_descriptors[note] & DESC_CHANNEL_MASK) == channel &&
+                ((note_descriptors[note] & DESC_OCTAVE_MASK) >> DESC_OCTAVE_SHIFT) == octave_encoded);
+              /* If it's the same channel and transposition, it could potentially be the same
+               * note number, so need to send any note off at this point prior to sending the
+               * note on, to avoid the note getting chopped off if it's the same note number.
+               * Conversely, if it's on another channel, we can't send it here, as we've already
+               * passed through the note on status byte for the note on channel in question.
+               * In any case, we need to apply note off transposition before registering
+               * the new note on, so that needs to happen here as well. */
+               if (!same_chtr) {
+                queued_note_off.status = 144 | (note_descriptors[note] & DESC_CHANNEL_MASK);
+                queued_note_off.note = apply_note_off_transpose(note, true);
+               }
+#ifdef SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE
+                 else {
+                /* Same channel and transpose. Send a note off immediately to avoid the voices
+                 * stacking up, which is nice, but can cause synths to run out of voices (depending
+                 * on how the voice allocation algorithm is implemented).
+                 * Todo: Have this as a switchable option, also as it adds latency.
+                 */
+                 Serial.write(apply_note_off_transpose(note, false));
+                 Serial.write(0); /* note off */
+                 /* we utilize running status here, for the note on currentl in progress */
+               }
+#endif
             }
-            data = apply_note_on_transpose(data, channel);
-          } else {
+            data = apply_note_on_transpose(note, channel);
+          } else { /* !low_latency_mode */
             skip = true; /* don't send note number now */
           }
           break;
@@ -489,40 +476,69 @@ void loop() {
             */
             if (data == 0) {
               low_latency_mode = false;
-              if (sustaining) {
-                skip = true;
-                note_descriptors[data] |= DESC_SUSTAIN;
-              }
+              /* Since we thought we were in low latency mode up till now, but it turns out we're
+               * actually receiving a note off, we just run with it: send the message through.
+               * This means that the first note off when entering low latency mode cannot be
+               * held by the sustain pedal emulation function.
+               * All that remains to do here is mark it as released in the note descriptor list. */
+              note_descriptors[note] = 0;
+              queued_note_off.status = 0;
+              /* There is a slight issue here in that in the transition to !low_latency_mode, we've
+               * already sent a note off (if SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE was set),
+               * and we're on our way to send what we thought (due to being in low latency mode)
+               * was a note on but which turned out to be a note off. This means that:
+               * a) The first note off which causes the switch to !low_latency_mode will be doubled.
+               * b) That note can not be sustained in sustain pedal emulation mode.
+               * This is essentially not fixable, but should in practice not cause any ill effects,
+               * so we'll leave it as it is.
+               */
             }
           } else { /* !low_latency_mode */
             if (data) { /* true note on */
-              if (insert_note_off) {
-                Serial.write(queued_note_off.note);
-                Serial.write(0);
-                queued_note_off.status = 0;
-                insert_note_off = false;
+              if (note_descriptors[note]) {
+                bool same_chtr =
+                  ((note_descriptors[note] & DESC_CHANNEL_MASK) == channel &&
+                  ((note_descriptors[note] & DESC_OCTAVE_MASK) >> DESC_OCTAVE_SHIFT) == octave_encoded);
+                /* If it's the same channel and transposition, it could potentially be the same
+                 * note number, so need to send any note off at this point prior to sending the
+                 * note on, to avoid the note getting chopped off if it's the same note number.
+                 * Conversely, if it's on another channel, we can't send it here, as we've already
+                 * passed through the note on status byte for the note on channel in question.
+                 * In any case, we need to apply note off transposition before registering
+                 * the new note on, so that needs to happen here as well.
+                 * Even in low latency mode, we queue this up if we can, so that the ongoing
+                 * note on gets priority. */
+                if (!same_chtr) {
+                  queued_note_off.status = 144 | (note_descriptors[note] & DESC_CHANNEL_MASK);
+                  queued_note_off.note = apply_note_off_transpose(note, true);
+                }
+#ifdef SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE
+                  else {
+                  /* Same channel and transpose. Send a note off immediately to avoid the voices
+                   * stacking up, which is nice, but can cause synths to run out of voices (depending
+                   * on how the voice allocation algorithm is implemented).
+                   * Todo: Have this as a switchable option, also as it adds latency.
+                   */
+                   running_status.send(NOTE_ON | channel, fresh_status_byte);
+                   Serial.write(apply_note_off_transpose(note, false));
+                   Serial.write(0); /* note off */
+                   /* we utilize running status here, for the note on currentl in progress */
+                }
+#endif
               }
               /* Note on: Time to send note on message: send status + note no here, vel further on */
-              byte new_status = NOTE_ON | channel;
-              running_status.send(new_status, fresh_status_byte);
+              running_status.send(NOTE_ON | channel, fresh_status_byte);
               Serial.write(apply_note_on_transpose(note, channel));
             } else { /* note off */
               if (sustaining) {
                 skip = true;
-                note_descriptors[data] |= DESC_SUSTAIN; /* indicate note off received and skipped */
+                note_descriptors[note] |= DESC_SUSTAIN; /* indicate note off received and skipped */
               } else {
-                /* Note off: send as note on w/ vel = 0 */
-                if (queued_note_off.status) { /* Potentially set when note received */
-                  running_status.send(queued_note_off.status, fresh_status_byte);
-                  Serial.write(queued_note_off.note);
-                  queued_note_off.status = 0; /* Don't need queue note off now */
-                } else {
-                  byte new_status = NOTE_ON | (note_descriptors[data] ?
-                                               (note_descriptors[data] & DESC_CHANNEL_MASK) :
-                                               channel);
-                  running_status.send(new_status, fresh_status_byte);
-                  Serial.write(apply_note_off_transpose(note, true));
-                }
+                byte new_status = NOTE_ON | (note_descriptors[data] ?
+                                             (note_descriptors[data] & DESC_CHANNEL_MASK) :
+                                             channel);
+                running_status.send(new_status, fresh_status_byte);
+                Serial.write(apply_note_off_transpose(note, true));
               }
             }
           }
