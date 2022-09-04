@@ -9,20 +9,20 @@
 /* Released under GPLv2. See LICENSE for details. */
 
 /* Features/limitations:
-   - In low latency mode, can only handle keyboards where note off is sent with status 128.
-   - When 144 with velocity 0 is received, switches to normal latency mode, where complete note on/off
-     message must be received before sending it on (latency 960 us).
-     - The first 144 note off received in low latency mode will not be shifted by the transpose memory.
-       This is unlikely to be a problem in practice, as is the first note received.
-   - When status 128 is received, switches to low latency mode.
-   - Status LED (D13) flashes 10 ms on incoming data. The status LED is inverted in normal mode
-     (i.e. normally on, and goes dark 10 ms on incoming data).
-   - In low latency mode, does not remember original channel when note off received,
-     unless HANDLE_CHANNEL is set. This adds a further 320 us.
-   - Mimics running status of source.
-   - When SKIP_CC is set, skips all CC 22, 23 and 24 messages. This feature adds
-     320 us of latency to all passing CC messages.
-*/
+ * - In low latency mode, can only handle keyboards where note off is sent with status 128.
+ * - When 144 with velocity 0 is received, switches to normal latency mode, where complete note on/off
+ *   message must be received before sending it on (latency 960 us).
+ *   - The first 144 note off received in low latency mode will not be shifted by the transpose memory.
+ *     This is unlikely to be a problem in practice, as is the first note received.
+ * - When status 128 is received, switches to low latency mode.
+ * - Status LED (D13) flashes 10 ms on incoming data. The status LED is inverted in normal mode
+ *   (i.e. normally on, and goes dark 10 ms on incoming data).
+ * - In low latency mode, does not remember original channel when note off received,
+ *   unless HANDLE_CHANNEL is set. This adds a further 320 us.
+ * - Mimics running status of source.
+ * - When SKIP_CC is set, skips all CC 22, 23 and 24 messages. This feature adds
+ *   320 us of latency to all passing CC messages.
+ */
 
 /* Define in order to remember note on channel when setting note offs in low latency mode.
  * (channel is always remembered in normal latency mode as it doesn't add any latency).
@@ -38,7 +38,7 @@
 //#define SKIP_CC "\026\027\030" /* CC 22, 23, 24 */
 
 /* Convert sustain pedal to delayed note offs - Sustain Pedal Emulation mode. */
-#define SUSTAIN_TO_NOTE_OFF
+#define EMULATE_SUSTAIN_PEDAL
 /* Sub modes: */
 /* When repeated notes received while sustaing for the same note with the same transpose/channel
  * as previous note, send note off to avoid stacking up voices.
@@ -52,8 +52,14 @@
  * so previously held notes are still held, but will be released when the pedal is released. */
 #define DONT_SUSTAIN_WHEN_NOTE_CHANNEL_CHANGED
 
-#if defined(SKIP_CC) || defined(SUSTAIN_TO_NOTE_OFF)
+/* Dependencies */
+
+#if defined(SKIP_CC) || defined(EMULATE_SUSTAIN_PEDAL)
 #define PROCESS_CC
+#endif
+
+#if defined(SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE)
+#define HANDLE_CHANNEL
 #endif
 
 #undef MIRROR_INCOMING_RUNNING_STATUS
@@ -359,8 +365,8 @@ void loop() {
 #endif
 
       /* Track note on/off status. All other channel messages just get sent
-         through.
-      */
+       * through.
+       */
       if (status == NOTE_ON) {
 #ifdef RELEASE_ALL_NOTES_WHEN_CHANNEL_OR_OCTAVE_CHANGED
         if (channel != prev_channel || octave_encoded != prev_octave_encoded) {
@@ -391,10 +397,10 @@ void loop() {
         state = STATE_NOTE_OFF_NOTE; /* next byte will be note */
 #ifdef HANDLE_CHANNEL
         /* When receiving note off, defer message until we get the note number. That way
-           we can adjust the channel number to match the note on channel. This adds a 320 us delay
-           to note off messages, compared to all other messages, but we can assume that note off
-           messages are by way of their function not as critical as note off messages.
-        */
+         * we can adjust the channel number to match the note on channel. This adds a 320 us delay
+         * to note off messages, compared to all other messages, but we can assume that note off
+         * messages are by way of their function not as critical as note off messages.
+         */
         skip = true; /* defer sending status byte until we have received note number. */
 #endif
         if (sustaining)
@@ -479,9 +485,9 @@ void loop() {
         case STATE_NOTE_ON_VEL:
           if (low_latency_mode) {
             /* If we get vel == 0, leave low latency mode, but we can't do anything about the currently
-               outgoing message, as we have already sent the note number, so just ride with it
-               (hope the transposition has not been changed since corresponding note on was sent).
-            */
+             * outgoing message, as we have already sent the note number, so just ride with it
+             * (hope the transposition has not been changed since corresponding note on was sent).
+             */
             if (data == 0) {
               low_latency_mode = false;
               /* Since we thought we were in low latency mode up till now, but it turns out we're
@@ -564,8 +570,8 @@ void loop() {
                                             (note_descriptors[data] & DESC_CHANNEL_MASK) :
                                             channel);
                /* We honor running status here, as we potentially need to insert a status byte, if the
-                  incoming stream employs running status while the transpose is being changed, so we
-                  want to minimize the number of inserted bytes added.
+                * incoming stream employs running status while the transpose is being changed, so we
+                * want to minimize the number of inserted bytes added.
                 */
               running_status.send(new_status, fresh_status_byte);
             }
@@ -586,7 +592,7 @@ void loop() {
 #ifdef SKIP_CC
           skipping_cc |= (!!data && !!strchr(SKIP_CC, data));
 #endif
-#ifdef SUSTAIN_TO_NOTE_OFF
+#ifdef EMULATE_SUSTAIN_PEDAL
           skipping_cc |= (data == CC_SUSTAIN_PEDAL);
 #endif
           if (skipping_cc)
@@ -601,7 +607,7 @@ void loop() {
         case STATE_CC_VAL:
           if (skipping_cc)
             skip = true;
-#ifdef SUSTAIN_TO_NOTE_OFF
+#ifdef EMULATE_SUSTAIN_PEDAL
           if (addr == CC_SUSTAIN_PEDAL) {
             if (data)
               sustaining = true;
