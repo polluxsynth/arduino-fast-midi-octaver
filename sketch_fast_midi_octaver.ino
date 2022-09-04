@@ -47,6 +47,10 @@
 /* Set this to release all sustained notes whenever a note is received with a channel and/or
  * transpose setting differing from the previous note received. */
 #undef RELEASE_ALL_NOTES_WHEN_CHANNEL_OR_OCTAVE_CHANGED
+/* Setting this means that the sustain pedal is considered up once a note on a different channel
+ * is received than before. The pedal is not considered to have transitioned from down to up though,
+ * so previously held notes are still held, but will be released when the pedal is released. */
+#define DONT_SUSTAIN_WHEN_NOTE_CHANNEL_CHANGED
 
 #if defined(SKIP_CC) || defined(SUSTAIN_TO_NOTE_OFF)
 #define PROCESS_CC
@@ -366,15 +370,19 @@ void loop() {
            * already sustained note, and we want a consistent behavior so the release of sustained
            * notes happen seemingly haphazardly (i.e. depending on the actual notes depressed).
            */
-           release_sustained_notes();
-           /* Signal to subsequent note number processing that notes have been released and thus
-            * don't need to be released again; in particular, that no additional status byte be
-            * sent after the note offs.
-            */
-           prev_channel = channel;
-           prev_octave_encoded = octave_encoded;
+          release_sustained_notes();
+          /* Signal to subsequent note number processing that notes have been released and thus
+           * don't need to be released again; in particular, that no additional status byte be
+           * sent after the note offs.
+           */
         }
 #endif
+#ifdef DONT_SUSTAIN_WHEN_NOTE_CHANNEL_CHANGED
+        if (prev_channel != channel)
+          sustaining = false;
+#endif
+        prev_channel = channel;
+        prev_octave_encoded = octave_encoded;
         if (!low_latency_mode)
           skip = true;
         state = STATE_NOTE_ON_NOTE; /* next byte will be note */
