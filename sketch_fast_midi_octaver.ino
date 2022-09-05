@@ -114,7 +114,7 @@
 
 // Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
 #define SSD1306_I2C_ADDRESS 0x3c
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire);
+Adafruit_SSD1306 disp(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire);
 
 #endif
 
@@ -161,33 +161,64 @@ byte read_octave(void)
 }
 
 #ifdef UI_DISPLAY
-void display_octave(byte octave)
+
+const char *octave_str(byte octave)
 {
-  char octave_str[3] = "  ";
+  static const char *octave_text[7] = { "", "-3", "-2", "-1", " 0", "+1", "+2" };
+
+  return octave_text[octave];
+}
+
+#if 0
+char *octave_str(byte octave)
+{
+  static char return_str[3] = "  ";
   byte disp_octave = octave;
 
   if (octave < OCTAVE_OFFSET) {
-    octave_str[0] = '-';
+    return_str[0] = '-';
     disp_octave = OCTAVE_OFFSET - octave; /* always positive */
   } else if (octave > OCTAVE_OFFSET) {
-    octave_str[0] = '+';
+    return_str[0] = '+';
     disp_octave = octave - OCTAVE_OFFSET;
   } else
     disp_octave = 0;
-  octave_str[1] = disp_octave + '0';
+  return_str[1] = disp_octave + '0';
+  return_str[2] = '\0';
 
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
+  return return_str;
+}
+#endif
 
-  display.setTextSize(HEADER_TEXTSIZE);
-  display.setCursor(HEADER_X, HEADER_Y);
-  display.println("Octave");
+enum type { DISP_OCTAVE, DISP_BOOL };
 
-  display.setTextSize(BODY_TEXTSIZE);
-  display.setCursor(BODY_X, BODY_Y);
-  display.println(octave_str);
+struct screen_def {
+  const char *header;
+  enum type type;
+  byte *value;
+  byte v_shift;
+  byte v_mask;
+  const char *(*str_func)(byte);
+};
 
-  display.display();
+struct screen_def screens[2] = {
+  { "Octave", DISP_OCTAVE, &octave_encoded, 0, 255, octave_str },
+};
+
+void display_screen(struct screen_def *screen)
+{
+  disp.clearDisplay();
+  disp.setTextColor(SSD1306_WHITE);
+
+  disp.setTextSize(HEADER_TEXTSIZE);
+  disp.setCursor(HEADER_X, HEADER_Y);
+  disp.println(screen->header);
+
+  disp.setTextSize(BODY_TEXTSIZE);
+  disp.setCursor(BODY_X, BODY_Y);
+  disp.println(screen->str_func(((*screen->value) >> screen->v_shift) & screen->v_mask));
+
+  disp.display();
 }
 #endif
 
@@ -289,7 +320,7 @@ void setup() {
   // put your setup code here, to run once:
   Serial.begin(31250);
 #ifdef UI_DISPLAY
-  display.begin(SSD1306_SWITCHCAPVCC, SSD1306_I2C_ADDRESS);
+  disp.begin(SSD1306_SWITCHCAPVCC, SSD1306_I2C_ADDRESS);
 #endif
 
   pinMode(TRANSPOSE_PIN_0, INPUT_PULLUP);
@@ -325,7 +356,7 @@ void loop() {
     /* Courtesy calculation - so we don't need to do it for each note on */
     transpose = octave_encoded * 12 - OCTAVE_OFFSET * 12;
 #ifdef UI_DISPLAY
-    display_octave(octave_encoded);
+    display_screen(&screens[0]);
 #endif
     octave_prev = octave_encoded;
   }
