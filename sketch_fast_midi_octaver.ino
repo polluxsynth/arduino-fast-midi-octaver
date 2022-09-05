@@ -46,7 +46,7 @@
 #define SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE
 /* Set this to release all sustained notes whenever a note is received with a channel and/or
  * transpose setting differing from the previous note received. */
-#undef RELEASE_ALL_NOTES_WHEN_CHANNEL_OR_OCTAVE_CHANGED
+#define RELEASE_ALL_NOTES_WHEN_CHANNEL_OR_OCTAVE_CHANGED
 /* Setting this means that the sustain pedal is considered up once a note on a different channel
  * is received than before. The pedal is not considered to have transitioned from down to up though,
  * so previously held notes are still held, but will be released when the pedal is released. */
@@ -84,8 +84,6 @@
 
 /* LED flash time */
 #define LED_FLASH_US 10000
-
-enum system_mode { MODE_OCTAVE, MODE_SET_SPE };
 
 #define STATE_PASS             0
 #define STATE_NOTE_ON_NOTE     1
@@ -125,10 +123,27 @@ byte octave_encoded = OCTAVE_OFFSET;
 byte octave_prev = 0;
 bool low_latency_mode = true;
 
-enum system_mode system_mode = MODE_OCTAVE;
-enum system_mode system_mode_prev = MODE_OCTAVE;
-enum mode_flags { MODE_SPE = 0 };
+byte channelize = 0;
+
+enum mode_flags {
+  MODE_SPE = 0,
+  MODE_SPE_AVOID_STACKUP = 1,
+  MODE_SPE_RELEASE_ALL_WHEN_CHANNEL_CHANGED = 2,
+  MODE_SPE_PEDAL_UP_WHEN_CHANNEL_CHANGED = 3,
+  MODE_SPE_SOSTENUTO = 4,
+  MODE_CHANNELIZE = 5,
+  MODE_LAST
+};
 byte mode_flags = 0;
+
+bool setting_parameters = false;
+bool setting_parameters_prev = false;
+
+byte settings_screen = 0; /* first screen in settings_screens (Channelize) */
+
+#define MODE_BIT(flag) (1 << (flag))
+
+#define MODE_SET(flag) (mode_flags & MODE_BIT(flag))
 
 long int led_flash_time;
 long int running_status_time;
@@ -169,42 +184,7 @@ byte read_octave(void)
 
 #ifdef UI_DISPLAY
 
-const char *octave_str(byte octave)
-{
-  static const char *octave_text[7] = { "", "-3", "-2", "-1", " 0", "+1", "+2" };
-
-  return octave_text[octave];
-}
-
-const char *bool_str(byte value)
-{
-  static const char *bool_text[2] = { "off", "on" };
-
-  return bool_text[value];
-}
-
-#if 0
-char *octave_str(byte octave)
-{
-  static char return_str[3] = "  ";
-  byte disp_octave = octave;
-
-  if (octave < OCTAVE_OFFSET) {
-    return_str[0] = '-';
-    disp_octave = OCTAVE_OFFSET - octave; /* always positive */
-  } else if (octave > OCTAVE_OFFSET) {
-    return_str[0] = '+';
-    disp_octave = octave - OCTAVE_OFFSET;
-  } else
-    disp_octave = 0;
-  return_str[1] = disp_octave + '0';
-  return_str[2] = '\0';
-
-  return return_str;
-}
-#endif
-
-enum type { DISP_OCTAVE, DISP_BOOL };
+enum type { DISP_OCTAVE, DISP_CHAN, DISP_BOOL };
 
 struct screen_def {
   const char *header;
@@ -212,26 +192,123 @@ struct screen_def {
   byte *value;
   byte v_shift;
   byte v_mask;
-  const char *(*str_func)(byte);
+  void (*str_func)(const struct screen_def *, char *);
+  void (*val_func)(const struct screen_def *, byte);
 };
 
-struct screen_def screens[2] = {
-  { "Octave", DISP_OCTAVE, &octave_encoded, 0, 255, octave_str },
-  { "SPE", DISP_BOOL, &mode_flags, MODE_SPE, 1, bool_str }
-};
-
-void display_screen(struct screen_def *screen)
+byte get_value(/* PROGMEM */ const struct screen_def *screen)
 {
+  return ((*(byte *)pgm_read_ptr(&screen->value)) >>
+           pgm_read_byte(&screen->v_shift)) &
+          pgm_read_byte(&screen->v_mask);
+}
+
+void octave_str(/* PROGMEM */ const struct screen_def *screen, char *buffer)
+{
+  byte octave = get_value(screen);
+  byte disp_octave;
+
+  if (octave < OCTAVE_OFFSET) {
+    *buffer++ = '-';
+    disp_octave = OCTAVE_OFFSET - octave; /* always positive */
+  } else if (octave > OCTAVE_OFFSET) {
+    *buffer++ = '+';
+    disp_octave = octave - OCTAVE_OFFSET;
+  } else {
+    *buffer++ = ' ';
+    disp_octave = 0;
+  }
+  *buffer++ = disp_octave + '0';
+  *buffer = '\0';
+}
+
+const char off[] PROGMEM = "off";
+
+void chan_str(/* PROGMEM */ const struct screen_def *screen, char *buffer)
+{
+  byte value = get_value(screen);
+
+  if (value) {
+    if (value >= 10) {
+      *buffer++ = '1';
+      value -= 10;
+    }
+    *buffer++ = value + '0';
+    *buffer = '\0';
+  } else {
+    strcpy_P(buffer, off);
+  }
+}
+
+void bool_str(/* PROGMEM */ const struct screen_def *screen, char *buffer)
+{
+  static const char on[] PROGMEM = "on";
+  static const char *const bool_text[2] PROGMEM = { off, on };
+  byte value = get_value(screen);
+
+  strcpy_P(buffer, pgm_read_ptr(&bool_text[value]));
+}
+
+void chan_val(/* PROGMEM */ const struct screen_def *screen, byte keyval)
+{
+  byte *value_ptr = pgm_read_ptr(&screen->value);
+  byte newval = *value_ptr * 10 + keyval;
+
+  if (newval > 16)
+    *value_ptr = keyval;
+  else
+    *value_ptr = newval;
+}
+
+void bool_val(/* PROGMEM */ const struct screen_def *screen, byte keyval)
+{
+  byte *value_ptr = pgm_read_ptr(&screen->value);
+  byte shift = pgm_read_byte(&screen->v_shift);
+
+  if (keyval) /* anything but 0 */
+    *value_ptr |= 1 << shift; /* set it */
+  else
+    *value_ptr &= ~(1 << shift); /* clear it */
+}
+
+const char octave_s[] PROGMEM = "Octave";
+const char channelize_s[] PROGMEM = "Channelize";
+const char spe_s[] PROGMEM = "Sust Ped E";
+const char spe_avoid_stackup_s[] PROGMEM = "SPE Max 1";
+const char spe_r_all_s[] PROGMEM = "SPE R All";
+const char spe_r_ch_s[] PROGMEM = "SPE Ped U";
+const char spe_sost_s[] PROGMEM = "SPE Sost";
+
+PROGMEM const struct screen_def octave_screen =
+  { octave_s, DISP_OCTAVE, &octave_encoded, 0, 255, octave_str, NULL };
+
+/* The setup screens are in the order given in settings_screens[] */
+PROGMEM const struct screen_def settings_screens[] = {
+  { channelize_s, DISP_CHAN, &channelize, 0, 255, chan_str, chan_val },
+  { spe_s, DISP_BOOL, &mode_flags, MODE_SPE, 1, bool_str, bool_val },
+  { spe_avoid_stackup_s, DISP_BOOL, &mode_flags, MODE_SPE_AVOID_STACKUP, 1, bool_str, bool_val },
+  { spe_r_all_s, DISP_BOOL, &mode_flags, MODE_SPE_RELEASE_ALL_WHEN_CHANNEL_CHANGED, 1, bool_str, bool_val },
+  { spe_r_ch_s, DISP_BOOL, &mode_flags, MODE_SPE_PEDAL_UP_WHEN_CHANNEL_CHANGED, 1, bool_str, bool_val },
+  { spe_sost_s, DISP_BOOL, &mode_flags, MODE_SPE_SOSTENUTO, 1, bool_str, bool_val },
+};
+
+void display_screen(/* PROGMEM */ const struct screen_def *screen)
+{
+  char strbuf[11]; /* used for header and value */
+  void (*str_func)(const struct screen_def *, char *);
+
   disp.clearDisplay();
   disp.setTextColor(SSD1306_WHITE);
 
   disp.setTextSize(HEADER_TEXTSIZE);
   disp.setCursor(HEADER_X, HEADER_Y);
-  disp.println(screen->header);
+  disp.println(strcpy_P(strbuf, pgm_read_ptr(&screen->header)));
 
   disp.setTextSize(BODY_TEXTSIZE);
   disp.setCursor(BODY_X, BODY_Y);
-  disp.println(screen->str_func(((*screen->value) >> screen->v_shift) & screen->v_mask));
+  str_func = pgm_read_ptr(&screen->str_func);
+  str_func(screen, strbuf);
+  disp.println(strbuf);
 
   disp.display();
 }
@@ -331,6 +408,86 @@ bool release_sustained_notes(void)
   return something_sent;
 }
 
+/* We map two octaves of keys to 14 'function' keys (white), and 10 'value'
+ * keys (black), the latter numbered 0..9. */
+
+#define FUNCTION_BIT 128
+
+#define SETTINGS_BASE_NOTE 36
+
+PROGMEM const byte settings_keymap[] = {
+  /* First octave: white keys are function #0..6, black keys are values #0..4 */
+  FUNCTION_BIT | 0, /* C - function 0 */
+  0, /* C# - value 0 */
+  FUNCTION_BIT | 1, /* D - function 1 */
+  1, /* D# - value 1 */
+  FUNCTION_BIT | 2, /* E - function 2 */
+  FUNCTION_BIT | 3, /* F - function 3 */
+  2, /* F# - value 2 */
+  FUNCTION_BIT | 4, /* G - function 4 */
+  3, /* G# - value 3 */
+  FUNCTION_BIT | 5, /* A - function 5 */
+  4, /* A# - value 4 */
+  FUNCTION_BIT | 6, /* B - function 6 */
+  /* Second octave: white keys are function #7..13, black keys are values #5..9 */
+  FUNCTION_BIT | 7, /* C - function 7 */
+  5, /* C# - value 5 */
+  FUNCTION_BIT | 8, /* D - function 8 */
+  6, /* D# - value 6 */
+  FUNCTION_BIT | 9, /* E - function 9 */
+  FUNCTION_BIT | 10, /* F - function 10 */
+  7, /* F# - value 7 */
+  FUNCTION_BIT | 11, /* G - function 11 */
+  8, /* G# - value 8 */
+  FUNCTION_BIT | 12, /* A - function 12 */
+  9, /* A# - value 9 */
+  FUNCTION_BIT | 13, /* B - function 13 */
+};
+
+void process_setting(byte data)
+{
+  static byte state = STATE_PASS;
+  static byte note;
+
+  if (data & 0x80) { /* MIDI status byte */
+    byte status = data & 0xf0;
+
+    if (status == NOTE_ON)
+      state = STATE_NOTE_ON_NOTE;
+    else
+      state = STATE_PASS;
+  } else { /* MIDI data byte */
+      if (state == STATE_NOTE_ON_NOTE) {
+      note = data;
+      state = STATE_NOTE_ON_VEL;
+    } else if (state == STATE_NOTE_ON_VEL) {
+      if (data) { /* note on */
+        byte funcval = -1;
+
+        note -= SETTINGS_BASE_NOTE;
+        if (note < sizeof(settings_keymap) / sizeof(settings_keymap[0])) {
+          funcval = pgm_read_byte(&settings_keymap[note]);
+          if (funcval & FUNCTION_BIT) { /* function */
+            funcval &= ~FUNCTION_BIT;
+            if (funcval < MODE_LAST)
+              /* Intricate detail: The order of the settings screens are in the order
+               * specified in settings_screens[], not the order that the bit numbers
+               * in enum mode_flags would imply. Indeed, the highest mode flags are reserved
+               * for settings that do not correspond to individual mode bits (such as Channelize). */
+              settings_screen = (enum mode_flags)funcval;
+          } else { /* value */
+            const struct screen_def *screen = &settings_screens[settings_screen];
+            void (*val_func)(const struct screen_def *, byte) = pgm_read_ptr(&screen->val_func);
+            if (val_func) val_func(screen, funcval);
+          }
+          display_screen(&settings_screens[settings_screen]);
+        }
+      }
+      state = STATE_NOTE_ON_NOTE;
+    }
+  }
+}
+
 void process_midi(byte data)
 {
   static byte channel, prev_channel = -1; /* last received channel, and one for previous note on */
@@ -358,6 +515,13 @@ void process_midi(byte data)
     byte status = data & 0xf0;
 
     channel = data & 0x0f;
+
+    if (channelize) {
+      channel = channelize - 1;
+      /* We echo and process data, so recreate with new channel */
+      data = status | channel;
+    }
+
 #ifdef MIRROR_INCOMING_RUNNING_STATUS
     fresh_status_byte = true;
 #endif
@@ -367,7 +531,8 @@ void process_midi(byte data)
      */
     if (status == NOTE_ON) {
 #ifdef RELEASE_ALL_NOTES_WHEN_CHANNEL_OR_OCTAVE_CHANGED
-      if (channel != prev_channel || octave_encoded != prev_octave_encoded) {
+      if (MODE_SET(MODE_SPE_RELEASE_ALL_WHEN_CHANNEL_CHANGED) &&
+          (channel != prev_channel || octave_encoded != prev_octave_encoded)) {
         /* We got a note on on a different channel or which will have a different tranposition
          * than the previous one received. If there are sustained notes, release them, as we
          * won't be able to keep track of them if a key is pressed corresponding to an
@@ -382,7 +547,7 @@ void process_midi(byte data)
       }
 #endif
 #ifdef DONT_SUSTAIN_WHEN_NOTE_CHANNEL_CHANGED
-      if (prev_channel != channel)
+      if (MODE_SET(MODE_SPE_PEDAL_UP_WHEN_CHANNEL_CHANGED) && prev_channel != channel)
         sustaining = false;
 #endif
       prev_channel = channel;
@@ -417,7 +582,8 @@ void process_midi(byte data)
     switch (state) {
       case STATE_NOTE_ON_NOTE:
 #ifdef RELEASE_ALL_NOTES_WHEN_CHANNEL_OR_OCTAVE_CHANGED
-        if (octave_encoded != prev_octave_encoded) {
+        if (MODE_SET(MODE_SPE_RELEASE_ALL_WHEN_CHANNEL_CHANGED) &&
+            octave_encoded != prev_octave_encoded) {
           /* This is where we handle a changed octave while experiencing incoming running status.
            * If we were not experiencing incoming running status, this would have been handled
            * higher up, when the status byte was received (in which case we also need to handle
@@ -463,7 +629,7 @@ void process_midi(byte data)
               queued_note_off.note = apply_note_off_transpose(note, true);
              }
 #ifdef SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE
-               else {
+               else if (MODE_SET(MODE_SPE_AVOID_STACKUP)) {
               /* Same channel and transpose. Send a note off immediately to avoid the voices
                * stacking up, which is nice, but can cause synths to run out of voices (depending
                * on how the voice allocation algorithm is implemented).
@@ -591,7 +757,8 @@ void process_midi(byte data)
         skipping_cc |= (!!data && !!strchr(SKIP_CC, data));
 #endif
 #ifdef EMULATE_SUSTAIN_PEDAL
-        skipping_cc |= (data == CC_SUSTAIN_PEDAL);
+        if (MODE_SET(MODE_SPE))
+          skipping_cc |= (data == CC_SUSTAIN_PEDAL);
 #endif
         if (skipping_cc)
           skip = true;
@@ -606,7 +773,7 @@ void process_midi(byte data)
         if (skipping_cc)
           skip = true;
 #ifdef EMULATE_SUSTAIN_PEDAL
-        if (addr == CC_SUSTAIN_PEDAL) {
+        if (MODE_SET(MODE_SPE) && addr == CC_SUSTAIN_PEDAL) {
           if (data)
             sustaining = true;
           else {
@@ -698,18 +865,23 @@ void loop() {
   new_octave_encoded = read_octave();
   if (new_octave_encoded > 1) {
     octave_encoded = new_octave_encoded;
-    system_mode = MODE_OCTAVE;
+    setting_parameters = false;
   } else {
-    system_mode = MODE_SET_SPE;
+    setting_parameters = true;
   }
-  if (octave_encoded != octave_prev || system_mode != system_mode_prev) {
+  if (octave_encoded != octave_prev || setting_parameters != setting_parameters_prev) {
+
     /* Courtesy calculation - so we don't need to do it for each note on */
     transpose = octave_encoded * 12 - OCTAVE_OFFSET * 12;
+    digitalWrite(LED_BUILTIN, HIGH ^ !low_latency_mode);
 #ifdef UI_DISPLAY
-    display_screen(&screens[system_mode]);
+    if (setting_parameters)
+      display_screen(&settings_screens[settings_screen]);
+    else
+      display_screen(&octave_screen);
 #endif
     octave_prev = octave_encoded;
-    system_mode_prev = system_mode;
+    setting_parameters_prev = setting_parameters;
   }
 
   if (Serial.available()) {
@@ -718,6 +890,9 @@ void loop() {
     led_flash_time = now;
 
     byte data = Serial.read();
-    process_midi(data);
+    if (setting_parameters)
+      process_setting(data);
+    else
+      process_midi(data);
   }
 }
