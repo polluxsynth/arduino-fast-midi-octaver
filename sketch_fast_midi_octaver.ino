@@ -3,12 +3,17 @@
 #include <Adafruit_SSD1306.h>
 
 /*
- * Fast (low latency - 320 us) note transpose filter.
+ * Fast (low latency - 320 us) octave transpose filter, with sustain pedal emulation and MIDI
+ * channelize options.
  */
 
 /* Released under GPLv2. See LICENSE for details. */
 
-/* Features/limitations:
+/*
+ * Octave transpose feature:
+ * - Octave transpose governed by grounding one of the TRANSPOSE_PIN_n pins, either with a
+ *   rotary switch or pushbuttons. Originally, the range is -3, -2, -1, 0, +1 or +2 octaves,
+ *   but the lowest range is normally replaced by a settings mode.
  * - In low latency mode, can only handle keyboards where note off is sent with status 128.
  * - When 144 with velocity 0 is received, switches to normal latency mode, where complete note on/off
  *   message must be received before sending it on (latency 960 us).
@@ -20,8 +25,77 @@
  * - In low latency mode, does not remember original channel when note off received,
  *   unless HANDLE_CHANNEL is set. This adds a further 320 us.
  * - Mimics running status of source.
+ *
+ * Skip CC function. This is intended to skip unwanted CC messages. It was originally devised
+ * to avoid passing through CC 22, 23 and 24 representing the accelerometer in the Radikal
+ * Technologies Accelerator synth.
  * - When SKIP_CC is set, skips all CC 22, 23 and 24 messages. This feature adds
  *   320 us of latency to all passing CC messages.
+ *
+ * Sustain Pedal Emulation (SPE). The purpose of this feature is for synths and other devices
+ * which have issues processing the sustain pedal. The Waldorf Blofeld is a case in point, as
+ * it tends to arbitrarily disregard sustain pedal messages.
+ * The limited memory within the Arduino results in some compromises with this mode. Most
+ * importantly, each key on the source kan only represent a single note on the destination,
+ * which means that whenever a note on from the source is received which is already held,
+ * on a different channel or tranpose setting than the original note, the original note is
+ * turned off, as there is only memory for one channel and transpose setting per source note.
+ *
+ * SPE has a number of sub modes:
+ * - By default, whenever a note on for the same channel and tranpose setting is received for
+ *   a note that is already held, it is just sent on with no further action. When the sustain
+ *   pedal is released, a single note off is sent, which tecnically is an inbalance in the
+ *   number of note ons and offs sent, but empirically most synths handle this without any
+ *   voices hanging - the note off counts for all the previous note ons received for that
+ *   note. However, many synths still allocate a new voice for every note on received, even
+ *   when the note number is the same as a voice already playing, which a) causes a build-up
+ *   of voices when the same note is repated with the sustain pedal held, and b) can cause
+ *   the synth to run out of voices. In order to alleviate, when "SPE Max 1" is set, under
+ *   the above circumstances, a note off is sent prior to sending the note on, so that
+ *   the number of note ons and offs is balanced, and no voice buildup or running out of
+ *   voices will occur. This is governed by the MODE_SPE_AVOID_STACKUP mode flag, and
+ *   the SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE macro.
+ * - By default, if the sustain pedal is down, when notes are received on a new channel or
+ *   transposition setting, old notes are sustained as far as possible (the exception being
+ *   if the new note has the same source note as one already held, as described previously,
+ *   which causes a note off to be sent for the already playing note, as only one destination
+ *   note is allowed to exist for each source note, due to memory limitations). However, when
+ *   "SPE R All" is set, whenever a note is received and the channel and/or transposition has
+ *   changed since the previous note, all previous notes are released. This is governed by the
+ *   MODE_SPE_RELEASE_ALL_WHEN_CHANNEL_CHANGED mode flag and the
+ *   RELEASE_ALL_NOTES_WHEN_CHANNEL_OR_OCTAVE_CHANGED macro.
+ * - By default, whenever the source channel is changed, the sustain pedal state is retained,
+ *   i.e. new notes are also held. However, when "SPE P U Ch" is set, whenever a note on is
+ *   received on a different channel than the previous message, the sustain pedal is set
+ *   to the up (released) state, however, existing held notes are not released. In order to
+ *   release them, the pedal must be pressed and released again. This means that notes can be
+ *   held on one channel, and switching to a new channel will still hold them, while the notes
+ *   on the new channel are played without hold This is governed by the
+ *   MODE_SPE_PEDAL_UP_WHEN_CHANNEL_CHANGED flag and DONT_SUSTAIN_WHEN_NOTE_CHANNEL_CHANGED macro.
+ * - Sostenuto. By default, all notes are held once the sustain pedal is pressed. In sostenuto
+ *   mode, i.e. when "SPE Sostnu" is set, only notes which are currently playing are held.
+ *   Notes received after the pedal has been pressed will not sustain. (This mode is note
+ *   yet implemented).
+ * - Channelize. Whenever the "Channelize" parameter is set to "off", the channel of incoming
+ *   messages is not changed. When this parameter is set to MIDI channel 1..16, incoming
+ *   messages are assigned this channel instead.
+ *
+ * Parameter setting. When enabled, the settings mode replaces the lowest transpose (-3) mde.
+ * In this mode, no MIDI messages are passed through (and the current state of all notes and
+ * the sustain pedal (when applicable) is retained), and instead the keys are used to set the
+ * different parameters.
+ *
+ * - Starting at note 36 (i.e. the lowest octave on a 5 octave keyboard), the white notes
+ *   select which parameter to set, starting with Channelize on C, SPE on D, and the SPE sub
+ *   modes on the following keys.
+ * - The corresponding black notes represent parameter values, with C# being off or 0,
+ *   D# being on or 1, etc, for two octaves, thus representing the values 0 to 9. In order
+ *   to enter MIDI channel numbers above 9, press two keys in succession, e.g. D# (for 1)
+ *   followed by F# (for 2) to enter channel number 12.
+ * - Parameter selection is retained as long as the devices is switched on. The default
+ *   parameter is Channelize after power on.
+ * - Parameters are currently note saved in non volatile memory, and default to "off" at
+ *   next power on.
  */
 
 /* Define in order to remember note on channel when setting note offs in low latency mode.
@@ -38,11 +112,11 @@
 //#define SKIP_CC "\026\027\030" /* CC 22, 23, 24 */
 
 /* Convert sustain pedal to delayed note offs - Sustain Pedal Emulation mode. */
+/* All the flags here can be disabled runtime in the settings screens (mode_flags) */
 #define EMULATE_SUSTAIN_PEDAL
 /* Sub modes: */
 /* When repeated notes received while sustaing for the same note with the same transpose/channel
- * as previous note, send note off to avoid stacking up voices.
- * This should be a run time adjustable option. */
+ * as previous note, send note off to avoid stacking up voices. */
 #define SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE
 /* Set this to release all sustained notes whenever a note is received with a channel and/or
  * transpose setting differing from the previous note received. */
@@ -68,14 +142,25 @@
 #define RUNNING_STATUS_TIMEOUT_US 1000000
 #endif
 
+/* Define this to enable the setting of parameters. When not set, the lowest octave
+ * setting will be replaced by the parameter setting mode.
+ */
+#define ENABLE_PARAMETER_SETTING
+
+/* Define this to enable runtime parameter display, on an SSD1306 128x64 OLED
+ * Note that the setting of parameters is still possible even if there is no display
+ * (you just can't see what has actually been set)
+ */
 #define UI_DISPLAY
 
 #define OCTAVE_OFFSET 4 /* e.g. octave -3 => encoded octave value is 1 */
 
 /* Digital pins 0 and 1 are used for (MIDI) serial communication, so use digital I/O
-   2 and upwards for the transpose switch input.
-*/
-#define TRANSPOSE_PIN_0        2
+ * 2 and upwards for the transpose control inputs. The pins are set to pull up,
+ * and control is excercised by grounding them, either using a rotary switch
+ * or push buttons.
+ */
+#define TRANSPOSE_PIN_0        2 /* Doubles as mode set when activated */
 #define TRANSPOSE_PIN_1        3
 #define TRANSPOSE_PIN_2        4
 #define TRANSPOSE_PIN_3        5
@@ -161,7 +246,7 @@ struct note {
   byte vel;
 };
 
-byte read_octave(void)
+byte read_octave_switch(void)
 {
   byte new_octave = octave_encoded;
 
@@ -275,17 +360,17 @@ const char channelize_s[] PROGMEM = "Channelize";
 const char spe_s[] PROGMEM = "Sust Ped E";
 const char spe_avoid_stackup_s[] PROGMEM = "SPE Max 1";
 const char spe_r_all_s[] PROGMEM = "SPE R All";
-const char spe_r_ch_s[] PROGMEM = "SPE Ped U Ch";
+const char spe_r_ch_s[] PROGMEM = "SPE P U Ch";
 const char spe_sost_s[] PROGMEM = "SPE Sostnu";
 
 #endif
 
 PROGMEM const struct screen_def octave_screen =
-  {
+{
 #ifdef UI_DISPLAY
-    octave_s, octave_str,
+  octave_s, octave_str,
 #endif
-                          &octave_encoded, 0, 255, NULL };
+                        &octave_encoded, 0, 255, NULL };
 
 /* The setup screens are in the order given in settings_screens[] */
 PROGMEM const struct screen_def settings_screens[] = {
@@ -439,12 +524,12 @@ bool release_sustained_notes(void)
   return something_sent;
 }
 
+#define SETTINGS_BASE_NOTE 36 /* standard bottom note of 5 and 4 octave keyboard */
+
 /* We map two octaves of keys to 14 'function' keys (white), and 10 'value'
  * keys (black), the latter numbered 0..9. */
 
 #define FUNCTION_BIT 128
-
-#define SETTINGS_BASE_NOTE 36
 
 PROGMEM const byte settings_keymap[] = {
   /* First octave: white keys are function #0..6, black keys are values #0..4 */
@@ -895,18 +980,21 @@ void loop() {
   }
 #endif
 
-  new_octave_encoded = read_octave();
+  new_octave_encoded = read_octave_switch();
+#ifdef ENABLE_PARAMETER_SETTING
   if (new_octave_encoded > 1) {
     octave_encoded = new_octave_encoded;
     setting_parameters = false;
   } else {
     setting_parameters = true;
   }
+#else
+  octave_encoded = new_octave_encoded;
+#endif
   if (octave_encoded != octave_prev || setting_parameters != setting_parameters_prev) {
 
     /* Courtesy calculation - so we don't need to do it for each note on */
     transpose = octave_encoded * 12 - OCTAVE_OFFSET * 12;
-    digitalWrite(LED_BUILTIN, HIGH ^ !low_latency_mode);
 #ifdef UI_DISPLAY
     if (setting_parameters)
       display_screen(&settings_screens[settings_screen]);
