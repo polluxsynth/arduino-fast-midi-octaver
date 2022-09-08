@@ -182,19 +182,40 @@ byte read_octave(void)
   return new_octave;
 }
 
-#ifdef UI_DISPLAY
-
-enum type { DISP_OCTAVE, DISP_CHAN, DISP_BOOL };
-
 struct screen_def {
+#ifdef UI_DISPLAY
   const char *header;
-  enum type type;
+  void (*str_func)(const struct screen_def *, char *);
+#endif
   byte *value;
   byte v_shift;
   byte v_mask;
-  void (*str_func)(const struct screen_def *, char *);
   void (*val_func)(const struct screen_def *, byte);
 };
+
+void chan_val(/* PROGMEM */ const struct screen_def *screen, byte keyval)
+{
+  byte *value_ptr = pgm_read_ptr(&screen->value);
+  byte newval = *value_ptr * 10 + keyval;
+
+  if (newval > 16)
+    *value_ptr = keyval;
+  else
+    *value_ptr = newval;
+}
+
+void bool_val(/* PROGMEM */ const struct screen_def *screen, byte keyval)
+{
+  byte *value_ptr = pgm_read_ptr(&screen->value);
+  byte shift = pgm_read_byte(&screen->v_shift);
+
+  if (keyval) /* anything but 0 */
+    *value_ptr |= 1 << shift; /* set it */
+  else
+    *value_ptr &= ~(1 << shift); /* clear it */
+}
+
+#ifdef UI_DISPLAY
 
 byte get_value(/* PROGMEM */ const struct screen_def *screen)
 {
@@ -249,48 +270,58 @@ void bool_str(/* PROGMEM */ const struct screen_def *screen, char *buffer)
   strcpy_P(buffer, pgm_read_ptr(&bool_text[value]));
 }
 
-void chan_val(/* PROGMEM */ const struct screen_def *screen, byte keyval)
-{
-  byte *value_ptr = pgm_read_ptr(&screen->value);
-  byte newval = *value_ptr * 10 + keyval;
-
-  if (newval > 16)
-    *value_ptr = keyval;
-  else
-    *value_ptr = newval;
-}
-
-void bool_val(/* PROGMEM */ const struct screen_def *screen, byte keyval)
-{
-  byte *value_ptr = pgm_read_ptr(&screen->value);
-  byte shift = pgm_read_byte(&screen->v_shift);
-
-  if (keyval) /* anything but 0 */
-    *value_ptr |= 1 << shift; /* set it */
-  else
-    *value_ptr &= ~(1 << shift); /* clear it */
-}
-
 const char octave_s[] PROGMEM = "Octave";
 const char channelize_s[] PROGMEM = "Channelize";
 const char spe_s[] PROGMEM = "Sust Ped E";
 const char spe_avoid_stackup_s[] PROGMEM = "SPE Max 1";
 const char spe_r_all_s[] PROGMEM = "SPE R All";
-const char spe_r_ch_s[] PROGMEM = "SPE Ped U";
-const char spe_sost_s[] PROGMEM = "SPE Sost";
+const char spe_r_ch_s[] PROGMEM = "SPE Ped U Ch";
+const char spe_sost_s[] PROGMEM = "SPE Sostnu";
+
+#endif
 
 PROGMEM const struct screen_def octave_screen =
-  { octave_s, DISP_OCTAVE, &octave_encoded, 0, 255, octave_str, NULL };
+  {
+#ifdef UI_DISPLAY
+    octave_s, octave_str,
+#endif
+                          &octave_encoded, 0, 255, NULL };
 
 /* The setup screens are in the order given in settings_screens[] */
 PROGMEM const struct screen_def settings_screens[] = {
-  { channelize_s, DISP_CHAN, &channelize, 0, 255, chan_str, chan_val },
-  { spe_s, DISP_BOOL, &mode_flags, MODE_SPE, 1, bool_str, bool_val },
-  { spe_avoid_stackup_s, DISP_BOOL, &mode_flags, MODE_SPE_AVOID_STACKUP, 1, bool_str, bool_val },
-  { spe_r_all_s, DISP_BOOL, &mode_flags, MODE_SPE_RELEASE_ALL_WHEN_CHANNEL_CHANGED, 1, bool_str, bool_val },
-  { spe_r_ch_s, DISP_BOOL, &mode_flags, MODE_SPE_PEDAL_UP_WHEN_CHANNEL_CHANGED, 1, bool_str, bool_val },
-  { spe_sost_s, DISP_BOOL, &mode_flags, MODE_SPE_SOSTENUTO, 1, bool_str, bool_val },
+  {
+#ifdef UI_DISPLAY
+    channelize_s, chan_str,
+#endif
+                             &channelize, 0, 255, chan_val },
+  {
+#ifdef UI_DISPLAY
+    spe_s, bool_str,
+#endif
+                     &mode_flags, MODE_SPE, 1, bool_val },
+  {
+#ifdef UI_DISPLAY
+    spe_avoid_stackup_s, bool_str,
+#endif
+                                   &mode_flags, MODE_SPE_AVOID_STACKUP, 1, bool_val },
+  {
+#ifdef UI_DISPLAY
+    spe_r_all_s, bool_str,
+#endif
+                           &mode_flags, MODE_SPE_RELEASE_ALL_WHEN_CHANNEL_CHANGED, 1, bool_val },
+  {
+#ifdef UI_DISPLAY
+    spe_r_ch_s, bool_str,
+#endif
+                          &mode_flags, MODE_SPE_PEDAL_UP_WHEN_CHANNEL_CHANGED, 1, bool_val },
+  {
+#ifdef UI_DISPLAY
+    spe_sost_s, bool_str,
+#endif
+                          &mode_flags, MODE_SPE_SOSTENUTO, 1, bool_val },
 };
+
+#ifdef UI_DISPLAY
 
 void display_screen(/* PROGMEM */ const struct screen_def *screen)
 {
@@ -480,7 +511,9 @@ void process_setting(byte data)
             void (*val_func)(const struct screen_def *, byte) = pgm_read_ptr(&screen->val_func);
             if (val_func) val_func(screen, funcval);
           }
+#ifdef UI_DISPLAY
           display_screen(&settings_screens[settings_screen]);
+#endif
         }
       }
       state = STATE_NOTE_ON_NOTE;
