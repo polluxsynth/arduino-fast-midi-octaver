@@ -132,7 +132,7 @@
 #define PROCESS_CC
 #endif
 
-#if defined(SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE)
+#if defined(SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE) || defined(EMULATE_SUSTAIN_PEDAL)
 #define HANDLE_CHANNEL
 #endif
 
@@ -247,6 +247,55 @@ struct note {
   byte note;
   byte vel;
 };
+
+class notebits {
+
+  public:
+    notebits(bool initial): m_bits{(byte)(initial ? 255 : 0)}
+    {
+
+    }
+
+    notebits(void)
+    {
+      notebits(0);
+    }
+
+    void set(byte bitno)
+    {
+       m_bits[byteno(bitno)] |= bytebit(bitno);
+    }
+
+    void clear(byte bitno)
+    {
+       m_bits[byteno(bitno)] &= ~bytebit(bitno);
+    }
+
+    bool is_set(byte bitno)
+    {
+      return !!(m_bits[byteno(bitno)] & bytebit(bitno));
+    }
+
+    void clearall(void)
+    {
+      memset(m_bits, 0, 16);
+    }
+
+  private:
+    byte bytebit(byte bitno)
+    {
+      return 1 << (bitno & 7);
+    }
+
+    byte byteno(byte bitno)
+    {
+      return (bitno & 127) / 8;
+    }
+
+    byte m_bits[128 / 8];
+};
+
+notebits sostenuto_held;
 
 byte read_octave_switch(void)
 {
@@ -458,8 +507,10 @@ byte apply_note_off_transpose(byte note, bool clear_descriptor_entry)
   if (note_descriptors[note]) /* only perform transpose if descriptor has been set */
     ret += ((note_descriptors[note] & DESC_OCTAVE_MASK) >> DESC_OCTAVE_SHIFT) * 12 - OCTAVE_OFFSET * 12;
 
-  if (clear_descriptor_entry)/* Mark the note as released */
+  if (clear_descriptor_entry) { /* Mark the note as released */
     note_descriptors[note] = 0;
+    sostenuto_held.clear(note);
+  }
 
   return ret;
 }
@@ -521,10 +572,29 @@ bool release_sustained_notes(void)
       Serial.write(apply_note_off_transpose(note, true));
       Serial.write(0); /* vel = 0 >= note off */
       something_sent = true;
-    }
+    } else
+      /* When releasing pedal, the sostenuto bit for notes that are still playing because the
+       * corresponding key is still down also needs to be cleared, or else they will continue
+       * to be sostenutod even if the pedal is up.
+       * We to this unconditionally even if sostenuto mode is not active, in order to clean up
+       * the list in the event of a mode change. */
+      sostenuto_held.clear(note);
   }
   return something_sent;
 }
+
+/* Set all played notes to sustain.
+ */
+void set_played_to_sustain(void)
+{
+  byte note;
+
+  for (note = 0; note < 128; note++) {
+    if (note_descriptors[note])
+      sostenuto_held.set(note);
+  }
+}
+
 
 #define SETTINGS_BASE_NOTE 36 /* standard bottom note of 5 and 4 octave keyboard */
 
@@ -686,7 +756,9 @@ void process_midi(byte data)
        */
       skip = true; /* defer sending status byte until we have received note number. */
 #endif
-      if (sustaining)
+      /* If sostenuto mode is active, then we can't echo the note off as yet, but need to wait
+       * until we know which note it is. */
+      if (sustaining || MODE_SET(MODE_SPE_SOSTENUTO))
         skip == true;
     }
 #ifdef PROCESS_CC
@@ -752,12 +824,10 @@ void process_midi(byte data)
                else if (MODE_SET(MODE_SPE_AVOID_STACKUP)) {
               /* Same channel and transpose. Send a note off immediately to avoid the voices
                * stacking up, which is nice, but can cause synths to run out of voices (depending
-               * on how the voice allocation algorithm is implemented).
-               * Todo: Have this as a switchable option, also as it adds latency.
-               */
+               * on how the voice allocation algorithm is implemented). */
                Serial.write(apply_note_off_transpose(note, false));
                Serial.write(0); /* note off */
-               /* we utilize running status here, for the note on currentl in progress */
+               /* we utilize running status here, for the note on currently in progress */
              }
 #endif
           }
@@ -828,7 +898,9 @@ void process_midi(byte data)
             running_status.send(NOTE_ON | channel, fresh_status_byte);
             Serial.write(apply_note_on_transpose(note, channel));
           } else { /* note off */
-            if (sustaining) {
+            /* In sostenuto mode, only skip note offs that are not already sustaining */
+            if (sustaining &&
+                (!MODE_SET(MODE_SPE_SOSTENUTO)) || sostenuto_held.is_set(note)) {
               skip = true;
               note_descriptors[note] |= DESC_SUSTAIN; /* indicate note off received and skipped */
             } else {
@@ -843,15 +915,17 @@ void process_midi(byte data)
         fresh_status_byte = false; /* next non-status byte received will employ running status */
         break;
       case STATE_NOTE_OFF_NOTE:
-        if (sustaining) {
+        note = data; /* also for later */
+        if (sustaining &&
+            (!MODE_SET(MODE_SPE_SOSTENUTO)) || sostenuto_held.is_set(note)) {
           skip = true;
-          note_descriptors[data] |= DESC_SUSTAIN; /* indicate note off received and skipped */
+          note_descriptors[note] |= DESC_SUSTAIN; /* indicate note off received and skipped */
         } else {
 #ifdef HANDLE_CHANNEL
           /* Now it's time to send our note off status. */
           {
-            byte new_status = NOTE_OFF | (note_descriptors[data] ?
-                                          (note_descriptors[data] & DESC_CHANNEL_MASK) :
+            byte new_status = NOTE_OFF | (note_descriptors[note] ?
+                                          (note_descriptors[note] & DESC_CHANNEL_MASK) :
                                           channel);
              /* We honor running status here, as we potentially need to insert a status byte, if the
               * incoming stream employs running status while the transpose is being changed, so we
@@ -860,11 +934,12 @@ void process_midi(byte data)
             running_status.send(new_status, fresh_status_byte);
           }
 #endif
-          data = apply_note_off_transpose(data, true);
+          data = apply_note_off_transpose(note, true);
         }
         break;
       case STATE_NOTE_OFF_VEL:
-        if (sustaining)
+        if (sustaining &&
+            (!MODE_SET(MODE_SPE_SOSTENUTO)) || sostenuto_held.is_set(note))
           skip = true;
         else
           fresh_status_byte = false; /* next non-status will employ running status */
@@ -894,9 +969,11 @@ void process_midi(byte data)
           skip = true;
 #ifdef EMULATE_SUSTAIN_PEDAL
         if (MODE_SET(MODE_SPE) && addr == CC_SUSTAIN_PEDAL) {
-          if (data)
+          if (data) {
             sustaining = true;
-          else {
+            if (MODE_SET(MODE_SPE_SOSTENUTO))
+              set_played_to_sustain();
+          } else {
             /* pedal released. Time to released all sustained notes. */
             sustaining = false;
             release_sustained_notes();
