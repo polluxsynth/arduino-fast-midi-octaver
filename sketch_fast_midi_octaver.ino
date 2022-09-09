@@ -219,16 +219,18 @@ enum mode_flags {
   MODE_CHANNELIZE = 5,
   MODE_LAST
 };
-byte mode_flags = 0;
+
+#define MODE_BIT(flag) (1 << (flag))
+
+#define MODE_SET(flag) (mode_flags & MODE_BIT(flag))
+
+byte mode_flags = MODE_BIT(MODE_SPE_AVOID_STACKUP); /* default value */
 
 bool setting_parameters = false;
 bool setting_parameters_prev = false;
 
 byte settings_screen = 0; /* first screen in settings_screens (Channelize) */
 
-#define MODE_BIT(flag) (1 << (flag))
-
-#define MODE_SET(flag) (mode_flags & MODE_BIT(flag))
 
 long int led_flash_time;
 long int running_status_time;
