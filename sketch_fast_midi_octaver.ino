@@ -194,7 +194,7 @@
 #define HEADER_Y 0
 #define HEADER_TEXTSIZE 2
 #define BODY_X 2
-#define BODY_Y 24
+#define BODY_Y 26
 #define BODY_TEXTSIZE 4
 
 // Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
@@ -470,6 +470,26 @@ void display_screen(/* PROGMEM */ const struct screen_def *screen)
   disp.setTextSize(HEADER_TEXTSIZE);
   disp.setCursor(HEADER_X, HEADER_Y);
   disp.println(strcpy_P(strbuf, pgm_read_ptr(&screen->header)));
+
+  /* Display additional information on octave screen: SPE mode, sostenuto, and channelize
+   * (when enabled). */
+  if (screen == &octave_screen) {
+    if (MODE_SET(MODE_SPE)) {
+      disp.setCursor(HEADER_X + 12 * 7 + 8, HEADER_Y);
+      disp.print("SPE");
+      if (MODE_SET(MODE_SPE_SOSTENUTO)) {
+        disp.setCursor(HEADER_X + 12 * 7 + 8, HEADER_Y + 16);
+        disp.print("Sos");
+      }
+    }
+    if (channelize) {
+      disp.setCursor(HEADER_X +12 * 7 + 8, HEADER_Y + 32 + 8);
+      disp.print("C");
+      if (channelize < 10)
+        disp.print("h");
+      disp.print(channelize);
+    }
+  }
 
   disp.setTextSize(BODY_TEXTSIZE);
   disp.setCursor(BODY_X, BODY_Y);
