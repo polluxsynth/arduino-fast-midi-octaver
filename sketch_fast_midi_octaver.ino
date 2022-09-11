@@ -1,6 +1,7 @@
 #include <string.h>
 /* For OLED graphics: */
 #include <Adafruit_SSD1306.h>
+#include "glcdfont.c"
 
 /*
  * Fast (low latency - 320 us) octave transpose filter, with sustain pedal emulation and MIDI
@@ -147,6 +148,10 @@
  */
 #define ENABLE_PARAMETER_SETTING
 
+/* Define this to enable MIDI dumps. */
+#define MIDIDUMP
+#define DUMPBUF_SIZE 12
+
 /* Define this to enable runtime parameter display, on an SSD1306 128x64 OLED
  * Note that the setting of parameters is still possible even if there is no display
  * (you just can't see what has actually been set)
@@ -193,13 +198,210 @@
 #define HEADER_X 0
 #define HEADER_Y 0
 #define HEADER_TEXTSIZE 2
+#define HEADER2_OFFSET (12 * 7)
 #define BODY_X 2
-#define BODY_Y 26
+#define BODY_Y 24
 #define BODY_TEXTSIZE 4
+#define DUMP_X (HEADER2_OFFSET - 6)
+#define DUMP_Y 16
+#define DUMP_TEXTSIZE 1
+
+long int now;
+
+class Fast_SSD1306: public Adafruit_SSD1306
+{
+public:
+  Fast_SSD1306(uint8_t w, uint8_t h, TwoWire *twi,
+               int8_t rst_pin, uint32_t clkDuring = 400000UL,
+               uint32_t clkAfter = 100000UL)
+     : Adafruit_SSD1306(w, h, twi, rst_pin, clkDuring, clkAfter)
+     {
+     }
+
+#define TRANSACTION_START wire->setClock(wireClk);
+#define TRANSACTION_END wire->setClock(restoreClk);
+#define WIRE_WRITE wire->write
+#if defined(I2C_BUFFER_LENGTH)
+#define WIRE_MAX min(256, I2C_BUFFER_LENGTH) ///< Particle or similar Wire lib
+#elif defined(BUFFER_LENGTH)
+#define WIRE_MAX min(256, BUFFER_LENGTH) ///< AVR or similar Wire lib
+#elif defined(SERIAL_BUFFER_SIZE)
+#define WIRE_MAX                                                               \
+  min(255, SERIAL_BUFFER_SIZE - 1) ///< Newer Wire uses RingBuffer
+#else
+#define WIRE_MAX 32 ///< Use common Arduino core default
+#endif
+
+  // Only write out portion of display, governed by starting
+  // coordinates x, y and width and hight w, h.
+  void displayRect(uint8_t x, uint8_t y, uint8_t w, uint8_t h)
+  {
+    TRANSACTION_START
+    // Set up area to write: Only the bytes we are actually going to address
+    // We assume here that the command length is < WIRE_MAX
+    wire->beginTransmission(i2caddr);
+    WIRE_WRITE((uint8_t)0x00); // Co = 0, D/C = 0
+    WIRE_WRITE(SSD1306_PAGEADDR);
+    WIRE_WRITE(y / 8);
+    WIRE_WRITE(0xff); // not really, but works here
+    WIRE_WRITE(SSD1306_COLUMNADDR);
+    WIRE_WRITE(x);    // column start address
+    WIRE_WRITE(x + w - 1); // column end address
+    wire->endTransmission();
+
+    uint16_t count = w * ((h + 7) / 8);
+    uint16_t wcount = w;
+    uint16_t y1 = y / 8;
+    uint8_t *ptr = buffer + WIDTH * y1 + x;
+
+    wire->beginTransmission(i2caddr);
+    WIRE_WRITE((uint8_t)0x40);
+    uint16_t bytesOut = 1;
+    while (count--) {
+      if (bytesOut >= WIRE_MAX) {
+        wire->endTransmission();
+        wire->beginTransmission(i2caddr);
+        WIRE_WRITE((uint8_t)0x40);
+        bytesOut = 1;
+      }
+      WIRE_WRITE(*ptr++);
+      bytesOut++;
+      if (--wcount == 0) {
+        // wrap column, so calculate new buffer address
+        y1++;
+        ptr = buffer + WIDTH * y1 + x;
+        wcount = w;
+      }
+    }
+    wire->endTransmission();
+    TRANSACTION_END
+  }
+
+  // Print characters directly to display, starting with
+  // coordinates x, y.
+  void printDirect(uint8_t x, uint8_t y, const char *s, byte fontsize = 1)
+  {
+    /* Tables describing how the 8 vertically ordered pixels for each font
+     * column are expanded for the different font sizes.
+     * For power-of-two font sizes, the expansion of each group of bits (pixels)
+     * ends up in separate target bytes, but for the others, some pixels
+     * end up in two vertically adjacent target bytes, hence, separate expansion
+     * tables are needed for each scanline.
+     * For instance, for font size 3, because of the *3 expansion, the first
+     * and last scan lines expand the first three and last three bits,
+     * respectively, but the middle scan line expands four bits, because it
+     * includes pixels from both the first and third scanlines.
+     * While all this could likely be done programmatically instead of using
+     * tables, tables would be seem to be faster and less error prone than a
+     * lot of bit shifting and masking. */
+    static const uint8_t PROGMEM expand2[] = { 0x00, 0x03, 0x0c, 0x0f,
+                                               0x30, 0x33, 0x3c, 0x3f,
+                                               0xc0, 0xc3, 0xcc, 0xcf,
+                                               0xf0, 0xf3, 0xfc, 0xff };
+    static const uint8_t PROGMEM expand3_0[] = { 0x00, 0x07, 0x38, 0x3f,
+                                                 0xc0, 0xc7, 0xf8, 0xff };
+    static const uint8_t PROGMEM expand3_1[] = { 0x00, 0x01, 0x0e, 0x0f,
+                                                 0x70, 0x71, 0x7e, 0x7f,
+                                                 0x80, 0x81, 0x8e, 0x8f,
+                                                 0xf0, 0xf1, 0xfe, 0xff };
+    static const uint8_t PROGMEM expand3_2[] = { 0x00, 0x03, 0x1c, 0x1f,
+                                                 0xe0, 0xe3, 0xfc, 0xff };
+    static const uint8_t PROGMEM expand4[] = { 0x00, 0x0f, 0xf0, 0xff };
+#if 0 /* This is actually faster to do programmatically; just leave for illustration */
+    static const uint8_t PROGMEM expand8[] = { 0x00, 0xff };
+#endif
+    const char *s1 = s; /* save pointer to start of string */
+    byte x1 = x;
+    byte l = strlen(s);
+    byte e = x + l * 6 * fontsize;
+    uint16_t y1 = y / 8;
+
+    if (e > WIDTH)
+      e = WIDTH;
+
+    TRANSACTION_START
+    // Set up area to write: Only the bytes we are actually going to address
+    wire->beginTransmission(i2caddr);
+    WIRE_WRITE((uint8_t)0x00); // Co = 0, D/C = 0
+    WIRE_WRITE(SSD1306_PAGEADDR);
+    WIRE_WRITE(y1);
+    WIRE_WRITE(0xff); // not really, but works here
+    WIRE_WRITE(SSD1306_COLUMNADDR);
+    WIRE_WRITE(x);    // column start address
+    WIRE_WRITE(e - 1); // column end address
+    wire->endTransmission();
+
+    uint16_t count = (e - x) * fontsize;
+    uint16_t count1 = 1;
+    uint8_t *ptr = buffer + WIDTH * y1 + x;
+    uint16_t scanline = 0, scancol = 0;
+    byte data;
+
+    wire->beginTransmission(i2caddr);
+    WIRE_WRITE((uint8_t)0x40);
+    uint16_t bytesOut = 1;
+    /* PROGMEM */ const byte *fp;
+    while (count--) {
+      if (bytesOut >= WIRE_MAX) {
+        wire->endTransmission();
+        wire->beginTransmission(i2caddr);
+        WIRE_WRITE((uint8_t)0x40);
+        bytesOut = 1;
+      }
+      if (scancol == 0) { /* generate data for new column, else reuse same data */
+        if (--count1 == 0) {
+          uint16_t ch = *(byte *)s++; /* fetch character from string */
+          fp = &font[ch * 5]; /* font pointer */
+          count1 = 6;
+        }
+        if (count1 == 1)
+          data = 0; /* blank last column */
+        else {
+          data = pgm_read_byte(fp++); /* read font column */
+          switch (fontsize) {
+            case 1: break;
+            case 2: data = pgm_read_byte(&expand2[(data >> (4 * scanline)) & 0xf]);
+                    break;
+            case 3: switch (scanline) {
+                      case 0: data = pgm_read_byte(&expand3_0[data & 0x7]); break;
+                      case 1: data = pgm_read_byte(&expand3_1[(data & 0x3c) >> 2]); break;
+                      case 2: data = pgm_read_byte(&expand3_2[(data & 0xe0) >> 6]); break;
+                    }
+                    break;
+            case 4: data = pgm_read_byte(&expand4[(data >> (2 * scanline)) & 0x3]);
+                    break;
+            case 8: data = ((data >> scanline) & 0x1) ? 0xff : 0;
+                    break;
+            default: break;
+          }
+        }
+      }
+      *ptr++ = data; /* write to our backup display RAM */
+      WIRE_WRITE(data);
+      bytesOut++;
+      x++;
+      if (++scancol >= fontsize || x >= WIDTH) {
+        scancol = 0;
+        if (count1 == 1 && *s == '\0' || x >= WIDTH) {
+          if (++y1 >= HEIGHT / 8)
+            break;
+          s = s1; /* restart string */
+          x = x1; /* restart column index */
+          count1 = 1; /* restart font column counter */
+          scanline++;
+          ptr = buffer + WIDTH * y1 + x; /* display RAM is contiguous; buffer not */
+        }
+      }
+    }
+    wire->endTransmission();
+    TRANSACTION_END
+  }
+
+};
 
 // Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
 #define SSD1306_I2C_ADDRESS 0x3c
-Adafruit_SSD1306 disp(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1, 1000000UL);
+Fast_SSD1306 disp(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1, 1000000UL);
 
 #endif
 
@@ -216,7 +418,8 @@ enum mode_flags {
   MODE_SPE_RELEASE_ALL_WHEN_CHANNEL_CHANGED = 2,
   MODE_SPE_PEDAL_UP_WHEN_CHANNEL_CHANGED = 3,
   MODE_SPE_SOSTENUTO = 4,
-  MODE_CHANNELIZE = 5,
+  MODE_MIDIDUMP = 5,
+  MODE_CHANNELIZE = 6,
   MODE_LAST
 };
 
@@ -231,6 +434,31 @@ bool setting_parameters_prev = false;
 
 byte settings_screen = 0; /* first screen in settings_screens (Channelize) */
 
+#ifdef MIDIDUMP
+/* The idea behind DUMP_TIMOUT_US is to wait a while after receiving MIDI data when
+ * hopefully the additional latency resulting from writing to the display will
+ * be less disruptive. However, this can go awry if the MIDI input is continually
+ * active, e.g. if the source sends us a MIDI clock. Since display printing is now
+ * relatively fast, leave the timeout at 0 for now. */
+//#define DUMP_TIMEOUT_US 50000 /* 50 ms */
+#define DUMP_TIMEOUT_US 0 /* now! */
+byte midi_dumpbuf[DUMPBUF_SIZE];
+byte dumpbuf_wrpos = -1; /* first write will be att +1, i.e. 0 */
+byte dumpbuf_rdpos = 0;
+byte dumpbuf_fill = 0;
+enum dump_mode { DUMPMODE_OFF = 0, DUMPMODE_IN, DUMPMODE_OUT };
+byte dump_mode = DUMPMODE_OFF;
+long dump_time_us = 0;
+
+void dump(byte data)
+{
+  if (++dumpbuf_wrpos >= DUMPBUF_SIZE)
+    dumpbuf_wrpos = 0;
+  midi_dumpbuf[dumpbuf_wrpos] = data;
+  dumpbuf_fill++;
+}
+
+#endif
 
 long int led_flash_time;
 long int running_status_time;
@@ -340,6 +568,13 @@ void chan_val(/* PROGMEM */ const struct screen_def *screen, byte keyval)
     *value_ptr = newval;
 }
 
+void dump_val(/* PROGMEM */ const struct screen_def *screen, byte keyval)
+{
+  byte *value_ptr = pgm_read_ptr(&screen->value);
+  if (keyval < 3)
+    *value_ptr = keyval;
+}
+
 void bool_val(/* PROGMEM */ const struct screen_def *screen, byte keyval)
 {
   byte *value_ptr = pgm_read_ptr(&screen->value);
@@ -376,43 +611,68 @@ void octave_str(/* PROGMEM */ const struct screen_def *screen, char *buffer)
     disp_octave = 0;
   }
   *buffer++ = disp_octave + '0';
+  *buffer++ = ' '; /* erase any old character from setup menu */
   *buffer = '\0';
 }
 
-const char off[] PROGMEM = "off";
+const char off_s[] PROGMEM = "off";
 
 void chan_str(/* PROGMEM */ const struct screen_def *screen, char *buffer)
 {
   byte value = get_value(screen);
+  byte pval = value;
 
   if (value) {
     if (value >= 10) {
       *buffer++ = '1';
-      value -= 10;
+      pval -= 10;
     }
-    *buffer++ = value + '0';
+    *buffer++ = pval + '0';
+    if (value < 10)
+      *buffer++ = ' '; /* erase any old character */
+    *buffer++ = ' '; /* erase any old character */
     *buffer = '\0';
   } else {
-    strcpy_P(buffer, off);
+    strcpy_P(buffer, off_s);
   }
+}
+
+void string_str(/* PROGMEM */ const struct screen_def *screen, const char * const text[], char *buffer)
+{
+  byte value = get_value(screen);
+
+  strcpy_P(buffer, pgm_read_ptr(&text[value]));
 }
 
 void bool_str(/* PROGMEM */ const struct screen_def *screen, char *buffer)
 {
-  static const char on[] PROGMEM = "on";
-  static const char *const bool_text[2] PROGMEM = { off, on };
-  byte value = get_value(screen);
+  static const char on_s[] PROGMEM = "on ";
+  static const char *const bool_text[2] PROGMEM = { off_s, on_s };
 
-  strcpy_P(buffer, pgm_read_ptr(&bool_text[value]));
+  string_str(screen, bool_text, buffer);
 }
 
-const char octave_s[] PROGMEM = "Octave";
+void dump_str(/* PROGMEM */ const struct screen_def *screen, char *buffer)
+{
+  static const char in_s[] PROGMEM = "in ";
+  static const char out_s[] PROGMEM = "out";
+  static const char *const dump_text[3] PROGMEM = { off_s, in_s, out_s };
+
+  string_str(screen, dump_text, buffer);
+}
+
+/* Put spaces as applicable at end of strings so they erase whatever was on
+ * the display before when printed. */
+const char octave_s[] PROGMEM = "Octave ";
 const char channelize_s[] PROGMEM = "Channelize";
 const char sust_ped_e_s[] PROGMEM = "Sust Ped E";
-const char spe_avoid_stackup_s[] PROGMEM = "SPE Max 1";
-const char spe_r_all_s[] PROGMEM = "SPE R All";
+const char spe_avoid_stackup_s[] PROGMEM = "SPE Max 1 ";
+const char spe_r_all_s[] PROGMEM = "SPE R All ";
 const char spe_r_ch_s[] PROGMEM = "SPE P U Ch";
 const char spe_sost_s[] PROGMEM = "SPE Sostnu";
+#ifdef MIDIDUMP
+const char mididump_s[] PROGMEM = "MIDI dump ";
+#endif
 
 #endif
 
@@ -455,52 +715,111 @@ PROGMEM const struct screen_def settings_screens[] = {
     spe_sost_s, bool_str,
 #endif
                           &mode_flags, MODE_SPE_SOSTENUTO, 1, bool_val },
+#ifdef MIDIDUMP
+  {
+#ifdef UI_DISPLAY
+    mididump_s, dump_str,
+#endif
+                          &dump_mode, 0, 3, dump_val },
+#endif
 };
 
 #ifdef UI_DISPLAY
 
+/* Triple space for clearing triple character items,
+ * and also for clearing display, by using fontsize = 8 */
+const char triple_space_s[] PROGMEM = "   ";
 const char spe_s[] PROGMEM = "SPE";
 const char sos_s[] PROGMEM = "Sos";
+const char in_s[] PROGMEM = " M\x1b"; /* M<- */
+const char out_s[] PROGMEM = " M\x1a"; /* M-> */
+
+static char strbuf[11]; /* used for sundry strings to be printed: header, value, midi dump ... */
+
+#ifdef MIDIDUMP
+void display_dump(bool dump_all)
+{
+  static byte print_pos = 0;
+
+  if (dump_all) {
+    /* clear screen area and reset print position */
+    disp.printDirect(DUMP_X, DUMP_Y, strcpy_P(strbuf, triple_space_s + 1), 8);
+    print_pos = 0;
+  }
+
+  while (dumpbuf_fill) {
+    byte p = print_pos;
+
+    sprintf(strbuf, "\xf9%-3d", midi_dumpbuf[dumpbuf_rdpos++]);
+    disp.printDirect(DUMP_X + (p / 6) * 6 * 4, DUMP_Y + (p % 6) * 8, strbuf, DUMP_TEXTSIZE);
+    // Blank out the little dot before the previous current line
+    p = print_pos == 0 ? 11 : (print_pos - 1);
+    strbuf[0] = ' ';
+    strbuf[1] = '\0';
+    disp.printDirect(DUMP_X + (p / 6) * 6 * 4, DUMP_Y + (p % 6) * 8, strbuf, DUMP_TEXTSIZE);
+
+    /* Administration */
+    if (dumpbuf_rdpos >= DUMPBUF_SIZE)
+      dumpbuf_rdpos = 0;
+    print_pos++;
+    if (print_pos >= DUMPBUF_SIZE)
+      print_pos = 0;
+    dumpbuf_fill--;
+
+    if (!dump_all) /* Only run once unless printing whole buffer */
+      break;
+  }
+}
+#endif
 
 void display_screen(/* PROGMEM */ const struct screen_def *screen)
 {
-  char strbuf[11]; /* used for header and value */
   void (*str_func)(const struct screen_def *, char *);
+  static const struct screen_def *prev_screen = NULL;
 
-  disp.clearDisplay();
-  disp.setTextColor(SSD1306_WHITE);
+  disp.printDirect(HEADER_X, HEADER_Y,
+                  strcpy_P(strbuf, pgm_read_ptr(&screen->header)), HEADER_TEXTSIZE);
 
-  disp.setTextSize(HEADER_TEXTSIZE);
-  disp.setCursor(HEADER_X, HEADER_Y);
-  disp.println(strcpy_P(strbuf, pgm_read_ptr(&screen->header)));
+  /* Clear dump area when going from octave -> setup */
+  if (screen != &octave_screen && prev_screen == &octave_screen)
+    disp.printDirect(DUMP_X, DUMP_Y, strcpy_P(strbuf, triple_space_s + 1), 8);
 
   /* Display additional information on octave screen: SPE mode, sostenuto, and channelize
    * (when enabled). */
   if (screen == &octave_screen) {
-    if (MODE_SET(MODE_SPE)) {
-      disp.setCursor(HEADER_X + 12 * 7 + 8, HEADER_Y);
-      disp.print(strcpy_P(strbuf, spe_s));
-      if (MODE_SET(MODE_SPE_SOSTENUTO)) {
-        disp.setCursor(HEADER_X + 12 * 7 + 8, HEADER_Y + 16);
-        disp.print(strcpy_P(strbuf, sos_s));
-      }
-    }
-    if (channelize) {
-      disp.setCursor(HEADER_X + 12 * 7 + 8, HEADER_Y + 32 + 8);
-      disp.print('C');
-      if (channelize < 10)
-        disp.print('h');
-      disp.print(channelize);
+#ifdef MIDIDUMP
+    if (dump_mode) {
+      /* Print header */
+      disp.printDirect(HEADER_X + HEADER2_OFFSET, HEADER_Y,
+                       strcpy_P(strbuf, dump_mode == DUMPMODE_IN ? in_s : out_s), HEADER_TEXTSIZE);
+    } else
+#endif
+           {
+    /* normal mode: print SPE, Sos and channelize when applicable */
+      disp.printDirect(HEADER_X + HEADER2_OFFSET, HEADER_Y,
+                       strcpy_P(strbuf, MODE_SET(MODE_SPE) ? spe_s : triple_space_s),
+                       HEADER_TEXTSIZE);
+      disp.printDirect(HEADER_X + HEADER2_OFFSET, HEADER_Y + 16,
+                       strcpy_P(strbuf,
+                                MODE_SET(MODE_SPE) && MODE_SET(MODE_SPE_SOSTENUTO) ?
+                                sos_s : triple_space_s),
+                       HEADER_TEXTSIZE);
+      if (channelize) {
+        char *s = strbuf;
+        *s++ = 'C';
+        if (channelize < 10)
+          *s++ = 'h';
+        itoa(channelize, s, 10);
+      } else
+        strcpy_P(strbuf, triple_space_s);
+      disp.printDirect(HEADER_X + HEADER2_OFFSET, HEADER_Y + 32 + 8, strbuf, HEADER_TEXTSIZE);
+
     }
   }
-
-  disp.setTextSize(BODY_TEXTSIZE);
-  disp.setCursor(BODY_X, BODY_Y);
   str_func = pgm_read_ptr(&screen->str_func);
   str_func(screen, strbuf);
-  disp.println(strbuf);
-
-  disp.display();
+  disp.printDirect(BODY_X, BODY_Y, strbuf, BODY_TEXTSIZE);
+  prev_screen = screen;
 }
 #endif
 
@@ -538,6 +857,17 @@ byte apply_note_off_transpose(byte note, bool clear_descriptor_entry)
   return ret;
 }
 
+void serial_write(byte data)
+{
+  Serial.write(data);
+#ifdef MIDIDUMP
+  if (dump_mode == DUMPMODE_OUT) {
+    dump(data);
+    dump_time_us = now;
+  }
+#endif
+}
+
 class RunningStatus {
 
 public:
@@ -553,7 +883,7 @@ public:
   {
     if (status != m_running_status || fresh_status_byte) {
       m_running_status = m_last_status = status;
-      Serial.write(status);
+      serial_write(status);
       return true;
     }
     return false;
@@ -596,8 +926,8 @@ bool release_sustained_notes(void)
       byte new_status = NOTE_ON | (note_descriptors[note] & DESC_CHANNEL_MASK);
       // Todo: fix saved note off velocity
       running_status.send(new_status);
-      Serial.write(apply_note_off_transpose(note, true));
-      Serial.write(0); /* vel = 0 >= note off */
+      serial_write(apply_note_off_transpose(note, true));
+      serial_write(0); /* vel = 0 >= note off */
       something_sent = true;
     } else
       /* When releasing pedal, the sostenuto bit for notes that are still playing because the
@@ -865,8 +1195,8 @@ void process_midi(byte data)
               /* Same channel and transpose. Send a note off immediately to avoid the voices
                * stacking up, which is nice, but can cause synths to run out of voices (depending
                * on how the voice allocation algorithm is implemented). */
-               Serial.write(apply_note_off_transpose(note, false));
-               Serial.write(0); /* note off */
+               serial_write(apply_note_off_transpose(note, false));
+               serial_write(0); /* note off */
                /* we utilize running status here, for the note on currently in progress */
              }
 #endif
@@ -928,15 +1258,15 @@ void process_midi(byte data)
                  * Todo: Have this as a switchable option, also as it adds latency.
                  */
                  running_status.send(NOTE_ON | channel, fresh_status_byte);
-                 Serial.write(apply_note_off_transpose(note, false));
-                 Serial.write(0); /* note off */
+                 serial_write(apply_note_off_transpose(note, false));
+                 serial_write(0); /* note off */
                  /* we utilize running status here, for the note on currentl in progress */
               }
 #endif
             }
             /* Note on: Time to send note on message: send status + note no here, vel further on */
             running_status.send(NOTE_ON | channel, fresh_status_byte);
-            Serial.write(apply_note_on_transpose(note, channel));
+            serial_write(apply_note_on_transpose(note, channel));
           } else { /* note off */
             /* In sostenuto mode, only skip note offs that are not already sustaining */
             if (sustaining &&
@@ -948,7 +1278,7 @@ void process_midi(byte data)
                                            (note_descriptors[data] & DESC_CHANNEL_MASK) :
                                            channel);
               running_status.send(new_status, fresh_status_byte);
-              Serial.write(apply_note_off_transpose(note, true));
+              serial_write(apply_note_off_transpose(note, true));
             }
           }
         }
@@ -1046,19 +1376,19 @@ void process_midi(byte data)
       if (data < 240) {
         running_status.send(data, fresh_status_byte);
       } else {
-        Serial.write(data);
+        serial_write(data);
         running_status.clear();
       }
     } else {
-      Serial.write(data); /* realtime or data byte */
+      serial_write(data); /* realtime or data byte */
     }
   }
   if (trigger_queued_note_off) {
     /* When we end up here, it's because we've just sent a note on, and need to send a note off
      * for the note previously occupying the note descriptor, to avoid it hanging. */
     running_status.send(queued_note_off.status);
-    Serial.write(queued_note_off.note);
-    Serial.write(0); /* => note off */
+    serial_write(queued_note_off.note);
+    serial_write(0); /* => note off */
     queued_note_off.status = 0;
   }
 }
@@ -1068,6 +1398,8 @@ void setup() {
   Serial.begin(31250);
 #ifdef UI_DISPLAY
   disp.begin(SSD1306_SWITCHCAPVCC, SSD1306_I2C_ADDRESS);
+  /* clear screen by writing maximum size spaces */
+  disp.printDirect(0, 0, strcpy_P(strbuf, triple_space_s), 8);
 #endif
 
   pinMode(TRANSPOSE_PIN_0, INPUT_PULLUP);
@@ -1083,8 +1415,9 @@ void setup() {
 }
 
 void loop() {
-  long int now = micros();
   byte new_octave_encoded;
+
+  now = micros();
 
   // put your main code here, to run repeatedly:
   /* Turn led off at end of flash period */
@@ -1132,7 +1465,21 @@ void loop() {
     byte data = Serial.read();
     if (setting_parameters)
       process_setting(data);
-    else
+    else {
       process_midi(data);
+#ifdef MIDIDUMP
+      if (dump_mode == DUMPMODE_IN) {
+        dump(data);
+        dump_time_us = now;
+      }
+#endif
+    }
   }
+#ifdef MIDIDUMP
+  /* print item in MIDI dump buffer if no data arrived for a while */
+  /* Caveat: This cold go wrong if the source never shuts off, for instance if is
+   * transmitting MIDI clock. */
+  if (!setting_parameters && dumpbuf_fill > 0 && now - dump_time_us >= DUMP_TIMEOUT_US)
+    display_dump(false);
+#endif
 }
