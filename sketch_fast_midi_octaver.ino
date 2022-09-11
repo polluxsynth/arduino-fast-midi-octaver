@@ -408,7 +408,7 @@ void bool_str(/* PROGMEM */ const struct screen_def *screen, char *buffer)
 
 const char octave_s[] PROGMEM = "Octave";
 const char channelize_s[] PROGMEM = "Channelize";
-const char spe_s[] PROGMEM = "Sust Ped E";
+const char sust_ped_e_s[] PROGMEM = "Sust Ped E";
 const char spe_avoid_stackup_s[] PROGMEM = "SPE Max 1";
 const char spe_r_all_s[] PROGMEM = "SPE R All";
 const char spe_r_ch_s[] PROGMEM = "SPE P U Ch";
@@ -432,7 +432,7 @@ PROGMEM const struct screen_def settings_screens[] = {
                              &channelize, 0, 255, chan_val },
   {
 #ifdef UI_DISPLAY
-    spe_s, bool_str,
+    sust_ped_e_s, bool_str,
 #endif
                      &mode_flags, MODE_SPE, 1, bool_val },
   {
@@ -459,6 +459,9 @@ PROGMEM const struct screen_def settings_screens[] = {
 
 #ifdef UI_DISPLAY
 
+const char spe_s[] PROGMEM = "SPE";
+const char sos_s[] PROGMEM = "Sos";
+
 void display_screen(/* PROGMEM */ const struct screen_def *screen)
 {
   char strbuf[11]; /* used for header and value */
@@ -476,17 +479,17 @@ void display_screen(/* PROGMEM */ const struct screen_def *screen)
   if (screen == &octave_screen) {
     if (MODE_SET(MODE_SPE)) {
       disp.setCursor(HEADER_X + 12 * 7 + 8, HEADER_Y);
-      disp.print("SPE");
+      disp.print(strcpy_P(strbuf, spe_s));
       if (MODE_SET(MODE_SPE_SOSTENUTO)) {
         disp.setCursor(HEADER_X + 12 * 7 + 8, HEADER_Y + 16);
-        disp.print("Sos");
+        disp.print(strcpy_P(strbuf, sos_s));
       }
     }
     if (channelize) {
-      disp.setCursor(HEADER_X +12 * 7 + 8, HEADER_Y + 32 + 8);
-      disp.print("C");
+      disp.setCursor(HEADER_X + 12 * 7 + 8, HEADER_Y + 32 + 8);
+      disp.print('C');
       if (channelize < 10)
-        disp.print("h");
+        disp.print('h');
       disp.print(channelize);
     }
   }
