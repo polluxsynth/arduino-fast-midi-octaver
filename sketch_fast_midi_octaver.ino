@@ -199,7 +199,7 @@
 
 // Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
 #define SSD1306_I2C_ADDRESS 0x3c
-Adafruit_SSD1306 disp(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire);
+Adafruit_SSD1306 disp(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1, 1000000UL);
 
 #endif
 
