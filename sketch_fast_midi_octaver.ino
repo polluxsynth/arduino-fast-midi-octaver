@@ -542,10 +542,8 @@ class RunningStatus {
 
 public:
   /* Constructor */
-  RunningStatus(void)
+  RunningStatus(void) : m_running_status(0), m_last_status(0)
   {
-    m_running_status = 0;
-    m_fresh_status_byte = 0;
   }
 
   /* Send status byte, honoring running status, unless fresh_status_byte is set.
@@ -554,7 +552,7 @@ public:
   bool send(byte status, bool fresh_status_byte)
   {
     if (status != m_running_status || fresh_status_byte) {
-      m_running_status = status;
+      m_running_status = m_last_status = status;
       Serial.write(status);
       return true;
     }
@@ -567,6 +565,12 @@ public:
     return send(status, false);
   }
 
+  /* Return last sent sent status */
+  byte last_status(void)
+  {
+    return m_last_status;
+  }
+
   void clear(void)
   {
     m_running_status = 0;
@@ -574,7 +578,7 @@ public:
 
 private:
   byte m_running_status;
-  bool m_fresh_status_byte;
+  byte m_last_status;
 };
 
 RunningStatus running_status;
@@ -817,12 +821,25 @@ void process_midi(byte data)
         if (low_latency_mode) {
           /* Here's the rub: not only might we have sent note offs on a different channel than
            * is currently being received, after sending a previous note on we might have transmitted
-           * a note off on a different channel (a queued_note_off). As a precaution, we therefore
-           * send a note on here, but the byte is actually only transmitted if necessary due to
-           * outgoing running status (which we enforce here, as any fresh status bytes received
-           * from the source will already have been sent on).
+           * a note off on a different channel (a queued_note_off). We can't unconditionally send
+           * a note on status here, because if the currently ongoing message did include a note on,
+           * it will be sent twice, The running status processing would technically take care of this,
+           * but that fails if our running status timeout hits at precisely this time. Therefore, we
+           * have the slightly odd situation here that if the last sent status is not the same as
+           * what would be used for the currently ongoing message, we send a new status message,
+           * which is similar to how running status works, except that this also works if running
+           * status for whatever reason (most likely, the running status timeout hit) is disabled.
+           * On the face of it, it looks like this would allow us to send two status bytes back
+           * to back, but the only way the status could be different is if running status is
+           * employed and the previously sent message was a queued note off; if the ongoing message
+           * was the last status sent, the channel will be unchanged and consequently the status
+           * byte will be unchanged as well, and no extra status byte will be sent.
+           * (Case in point: Zynthian upon receiving a double note on status bytes will behave oddly,
+           * confusing subequent note on and off messages.)
            */
-          running_status.send(NOTE_ON | channel);
+          byte new_status = NOTE_ON | channel;
+          if (running_status.last_status() != new_status)
+            running_status.send(new_status);
           /* If we find that there is already an active note for the source note number,
            * send a note off message. This means that the note is sustained, as otherwise when we
            * would have received a note off for it, the entry in the list would have been cleared
