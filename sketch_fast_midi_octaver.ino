@@ -418,8 +418,6 @@ enum mode_flags {
   MODE_SPE_RELEASE_ALL_WHEN_CHANNEL_CHANGED = 2,
   MODE_SPE_PEDAL_UP_WHEN_CHANNEL_CHANGED = 3,
   MODE_SPE_SOSTENUTO = 4,
-  MODE_MIDIDUMP = 5,
-  MODE_CHANNELIZE = 6,
   MODE_LAST
 };
 
@@ -1014,12 +1012,8 @@ void process_setting(byte data)
           funcval = pgm_read_byte(&settings_keymap[note]);
           if (funcval & FUNCTION_BIT) { /* function */
             funcval &= ~FUNCTION_BIT;
-            if (funcval < MODE_LAST)
-              /* Intricate detail: The order of the settings screens are in the order
-               * specified in settings_screens[], not the order that the bit numbers
-               * in enum mode_flags would imply. Indeed, the highest mode flags are reserved
-               * for settings that do not correspond to individual mode bits (such as Channelize). */
-              settings_screen = (enum mode_flags)funcval;
+            if (funcval < sizeof(settings_screens) / sizeof(settings_screens[0]))
+              settings_screen = funcval;
           } else { /* value */
             const struct screen_def *screen = &settings_screens[settings_screen];
             void (*val_func)(const struct screen_def *, byte) = pgm_read_ptr(&screen->val_func);
