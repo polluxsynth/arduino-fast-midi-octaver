@@ -75,8 +75,14 @@
  *   MODE_SPE_PEDAL_UP_WHEN_CHANNEL_CHANGED flag and DONT_SUSTAIN_WHEN_NOTE_CHANNEL_CHANGED macro.
  * - Sostenuto. By default, all notes are held once the sustain pedal is pressed. In sostenuto
  *   mode, i.e. when "SPE Sostnu" is set, only notes which are currently playing are held.
- *   Notes received after the pedal has been pressed will not sustain. (This mode is note
+ *   Notes received after the pedal has been pressed will not sustain. (This mode is not
  *   yet implemented).
+ * - Sustain pedal no running status mode. This mode cancels running status when outputting
+ *   sustain pedal CC messages, when "PedNoRunSt" is set. This works around a bug in the
+ *   Waldorf Blofeld, which causes a pedal down message (CC 64 127) to be disregarded if
+ *   running status is in effect, for instance when receiving the sequence CC 64 0 64 127
+ *   (pedal up then down), causing notes to unexpectedly not sustain even though the
+ *   sustain pedal is depressed.
  * - Channelize. Whenever the "Channelize" parameter is set to "off", the channel of incoming
  *   messages is not changed. When this parameter is set to MIDI channel 1..16, incoming
  *   messages are assigned this channel instead.
@@ -114,6 +120,16 @@
 
 /* Convert sustain pedal to delayed note offs - Sustain Pedal Emulation mode. */
 /* All the flags here can be disabled runtime in the settings screens (mode_flags) */
+
+/* EMULATE_SUSTAIN_PEDAL also needs to be set in order to include the optional
+ * CC No Running Status (CC_PED_NRS) mode, which is intended to fix a problem with the
+ * Waldorf Blofeld which doesn't handle running status for the sustain pedal properly,
+ * meaning that if sustain pedal down (CC 64 127) message is received with running
+ * status employed, it does not register it, and subsequent notes will not sustain.
+ * CC_PED_NRS mode always inserts a CC before every outgoing sustain pedal message, regardless
+ * of whether running status is employed by the source or not, or MIRROR_INCOMING_RUNNING_STATUS
+ * is set or not.
+ */
 #define EMULATE_SUSTAIN_PEDAL
 /* Sub modes: */
 /* When repeated notes received while sustaing for the same note with the same transpose/channel
@@ -418,6 +434,7 @@ enum mode_flags {
   MODE_SPE_RELEASE_ALL_WHEN_CHANNEL_CHANGED = 2,
   MODE_SPE_PEDAL_UP_WHEN_CHANNEL_CHANGED = 3,
   MODE_SPE_SOSTENUTO = 4,
+  MODE_CC_PED_NRS = 5,
   MODE_LAST
 };
 
@@ -425,7 +442,7 @@ enum mode_flags {
 
 #define MODE_SET(flag) (mode_flags & MODE_BIT(flag))
 
-byte mode_flags = MODE_BIT(MODE_SPE_AVOID_STACKUP); /* default value */
+byte mode_flags = MODE_BIT(MODE_SPE_AVOID_STACKUP) | MODE_BIT(MODE_CC_PED_NRS); /* default value */
 
 bool setting_parameters = false;
 bool setting_parameters_prev = false;
@@ -663,11 +680,14 @@ void dump_str(/* PROGMEM */ const struct screen_def *screen, char *buffer)
  * the display before when printed. */
 const char octave_s[] PROGMEM = "Octave ";
 const char channelize_s[] PROGMEM = "Channelize";
+#ifdef EMULATE_SUSTAIN_PEDAL
 const char sust_ped_e_s[] PROGMEM = "Sust Ped E";
 const char spe_avoid_stackup_s[] PROGMEM = "SPE Max 1 ";
 const char spe_r_all_s[] PROGMEM = "SPE R All ";
 const char spe_r_ch_s[] PROGMEM = "SPE P U Ch";
 const char spe_sost_s[] PROGMEM = "SPE Sostnu";
+const char cc_nrs_s[] PROGMEM = "PedNoRunSt";
+#endif
 #ifdef MIDIDUMP
 const char mididump_s[] PROGMEM = "MIDI dump ";
 #endif
@@ -688,6 +708,7 @@ PROGMEM const struct screen_def settings_screens[] = {
     channelize_s, chan_str,
 #endif
                              &channelize, 0, 255, chan_val },
+#ifdef EMULATE_SUSTAIN_PEDAL
   {
 #ifdef UI_DISPLAY
     sust_ped_e_s, bool_str,
@@ -713,6 +734,12 @@ PROGMEM const struct screen_def settings_screens[] = {
     spe_sost_s, bool_str,
 #endif
                           &mode_flags, MODE_SPE_SOSTENUTO, 1, bool_val },
+  {
+#ifdef UI_DISPLAY
+    cc_nrs_s, bool_str,
+#endif
+                          &mode_flags, MODE_CC_PED_NRS, 1, bool_val },
+#endif
 #ifdef MIDIDUMP
   {
 #ifdef UI_DISPLAY
@@ -1064,7 +1091,19 @@ void process_midi(byte data)
     }
 
 #ifdef MIRROR_INCOMING_RUNNING_STATUS
-    fresh_status_byte = true;
+    /* If we get a status byte for a channel message, then running status is
+     * not being employed for the currently received message. */
+    if (status < 240)
+      fresh_status_byte = true;
+#endif
+
+#if 0 // ?needed
+    /* If we get a status byte for a channel message, then running status is
+     * not being employed for the currently received message.
+     * We need to remember this for certain message types (e.g. CC No Running Status
+     * mode). */
+    if (status < 240)
+      input_running_status = false;
 #endif
 
     /* Track note on/off status. All other channel messages just get sent
@@ -1325,7 +1364,8 @@ void process_midi(byte data)
           /* We've got CC + address, so send it on */
           /* Value will be sent when we get it */
           byte new_status = CONTROL_CHANGE | channel;
-          running_status.send(new_status, fresh_status_byte);
+          running_status.send(new_status, fresh_status_byte ||
+                                          data == CC_SUSTAIN_PEDAL && MODE_SET(MODE_CC_PED_NRS));
         }
         break;
       case STATE_CC_VAL:
@@ -1344,6 +1384,7 @@ void process_midi(byte data)
           }
         }
 #endif
+        fresh_status_byte = false; /* set for next CC_ADDR state */
         break;
 #endif
       default: /* Do nothing, just echo byte received */
