@@ -1220,7 +1220,7 @@ void process_midi(byte data)
              * In any case, we need to apply note off transposition before registering
              * the new note on, so that needs to happen here as well. */
              if (!same_chtr) {
-              queued_note_off.status = 144 | (note_descriptors[note] & DESC_CHANNEL_MASK);
+              queued_note_off.status = NOTE_ON | (note_descriptors[note] & DESC_CHANNEL_MASK);
               queued_note_off.note = apply_note_off_transpose(note, true);
              }
 #ifdef SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE
@@ -1280,7 +1280,7 @@ void process_midi(byte data)
                * Even in low latency mode, we queue this up if we can, so that the ongoing
                * note on gets priority. */
               if (!same_chtr) {
-                queued_note_off.status = 144 | (note_descriptors[note] & DESC_CHANNEL_MASK);
+                queued_note_off.status = NOTE_ON | (note_descriptors[note] & DESC_CHANNEL_MASK);
                 queued_note_off.note = apply_note_off_transpose(note, true);
               }
 #ifdef SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE
