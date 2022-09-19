@@ -1,14 +1,15 @@
-#include <string.h>
-/* For OLED graphics: */
-#include <Adafruit_SSD1306.h>
-#include "glcdfont.c"
-
 /*
  * Fast (low latency - 320 us) octave transpose filter, with sustain pedal emulation and MIDI
- * channelize options.
+ * channelize options, and optional MIDI dump mode.
+ *
+ * Copyright (c) 2022, Ricard Wanderlof.
+ * Released under GPLv2. See LICENSE for details.
  */
 
-/* Released under GPLv2. See LICENSE for details. */
+#include <string.h>
+#include <Adafruit_I2CDevice.h>
+#include "fast_ssd1306.h"
+
 
 /*
  * Octave transpose feature:
@@ -222,204 +223,13 @@
 #define DUMP_Y 16
 #define DUMP_TEXTSIZE 1
 
-long int now;
-
-class Fast_SSD1306: public Adafruit_SSD1306
-{
-public:
-  Fast_SSD1306(uint8_t w, uint8_t h, TwoWire *twi,
-               int8_t rst_pin, uint32_t clkDuring = 400000UL,
-               uint32_t clkAfter = 100000UL)
-     : Adafruit_SSD1306(w, h, twi, rst_pin, clkDuring, clkAfter)
-     {
-     }
-
-#define TRANSACTION_START wire->setClock(wireClk);
-#define TRANSACTION_END wire->setClock(restoreClk);
-#define WIRE_WRITE wire->write
-#if defined(I2C_BUFFER_LENGTH)
-#define WIRE_MAX min(256, I2C_BUFFER_LENGTH) ///< Particle or similar Wire lib
-#elif defined(BUFFER_LENGTH)
-#define WIRE_MAX min(256, BUFFER_LENGTH) ///< AVR or similar Wire lib
-#elif defined(SERIAL_BUFFER_SIZE)
-#define WIRE_MAX                                                               \
-  min(255, SERIAL_BUFFER_SIZE - 1) ///< Newer Wire uses RingBuffer
-#else
-#define WIRE_MAX 32 ///< Use common Arduino core default
-#endif
-
-  // Only write out portion of display, governed by starting
-  // coordinates x, y and width and hight w, h.
-  void displayRect(uint8_t x, uint8_t y, uint8_t w, uint8_t h)
-  {
-    TRANSACTION_START
-    // Set up area to write: Only the bytes we are actually going to address
-    // We assume here that the command length is < WIRE_MAX
-    wire->beginTransmission(i2caddr);
-    WIRE_WRITE((uint8_t)0x00); // Co = 0, D/C = 0
-    WIRE_WRITE(SSD1306_PAGEADDR);
-    WIRE_WRITE(y / 8);
-    WIRE_WRITE(0xff); // not really, but works here
-    WIRE_WRITE(SSD1306_COLUMNADDR);
-    WIRE_WRITE(x);    // column start address
-    WIRE_WRITE(x + w - 1); // column end address
-    wire->endTransmission();
-
-    uint16_t count = w * ((h + 7) / 8);
-    uint16_t wcount = w;
-    uint16_t y1 = y / 8;
-    uint8_t *ptr = buffer + WIDTH * y1 + x;
-
-    wire->beginTransmission(i2caddr);
-    WIRE_WRITE((uint8_t)0x40);
-    uint16_t bytesOut = 1;
-    while (count--) {
-      if (bytesOut >= WIRE_MAX) {
-        wire->endTransmission();
-        wire->beginTransmission(i2caddr);
-        WIRE_WRITE((uint8_t)0x40);
-        bytesOut = 1;
-      }
-      WIRE_WRITE(*ptr++);
-      bytesOut++;
-      if (--wcount == 0) {
-        // wrap column, so calculate new buffer address
-        y1++;
-        ptr = buffer + WIDTH * y1 + x;
-        wcount = w;
-      }
-    }
-    wire->endTransmission();
-    TRANSACTION_END
-  }
-
-  // Print characters directly to display, starting with
-  // coordinates x, y.
-  void printDirect(uint8_t x, uint8_t y, const char *s, byte fontsize = 1)
-  {
-    /* Tables describing how the 8 vertically ordered pixels for each font
-     * column are expanded for the different font sizes.
-     * For power-of-two font sizes, the expansion of each group of bits (pixels)
-     * ends up in separate target bytes, but for the others, some pixels
-     * end up in two vertically adjacent target bytes, hence, separate expansion
-     * tables are needed for each scanline.
-     * For instance, for font size 3, because of the *3 expansion, the first
-     * and last scan lines expand the first three and last three bits,
-     * respectively, but the middle scan line expands four bits, because it
-     * includes pixels from both the first and third scanlines.
-     * While all this could likely be done programmatically instead of using
-     * tables, tables would be seem to be faster and less error prone than a
-     * lot of bit shifting and masking. */
-    static const uint8_t PROGMEM expand2[] = { 0x00, 0x03, 0x0c, 0x0f,
-                                               0x30, 0x33, 0x3c, 0x3f,
-                                               0xc0, 0xc3, 0xcc, 0xcf,
-                                               0xf0, 0xf3, 0xfc, 0xff };
-    static const uint8_t PROGMEM expand3_0[] = { 0x00, 0x07, 0x38, 0x3f,
-                                                 0xc0, 0xc7, 0xf8, 0xff };
-    static const uint8_t PROGMEM expand3_1[] = { 0x00, 0x01, 0x0e, 0x0f,
-                                                 0x70, 0x71, 0x7e, 0x7f,
-                                                 0x80, 0x81, 0x8e, 0x8f,
-                                                 0xf0, 0xf1, 0xfe, 0xff };
-    static const uint8_t PROGMEM expand3_2[] = { 0x00, 0x03, 0x1c, 0x1f,
-                                                 0xe0, 0xe3, 0xfc, 0xff };
-    static const uint8_t PROGMEM expand4[] = { 0x00, 0x0f, 0xf0, 0xff };
-#if 0 /* This is actually faster to do programmatically; just leave for illustration */
-    static const uint8_t PROGMEM expand8[] = { 0x00, 0xff };
-#endif
-    const char *s1 = s; /* save pointer to start of string */
-    byte x1 = x;
-    byte l = strlen(s);
-    byte e = x + l * 6 * fontsize;
-    uint16_t y1 = y / 8;
-
-    if (e > WIDTH)
-      e = WIDTH;
-
-    TRANSACTION_START
-    // Set up area to write: Only the bytes we are actually going to address
-    wire->beginTransmission(i2caddr);
-    WIRE_WRITE((uint8_t)0x00); // Co = 0, D/C = 0
-    WIRE_WRITE(SSD1306_PAGEADDR);
-    WIRE_WRITE(y1);
-    WIRE_WRITE(0xff); // not really, but works here
-    WIRE_WRITE(SSD1306_COLUMNADDR);
-    WIRE_WRITE(x);    // column start address
-    WIRE_WRITE(e - 1); // column end address
-    wire->endTransmission();
-
-    uint16_t count = (e - x) * fontsize;
-    uint16_t count1 = 1;
-    uint8_t *ptr = buffer + WIDTH * y1 + x;
-    uint16_t scanline = 0, scancol = 0;
-    byte data;
-
-    wire->beginTransmission(i2caddr);
-    WIRE_WRITE((uint8_t)0x40);
-    uint16_t bytesOut = 1;
-    /* PROGMEM */ const byte *fp;
-    while (count--) {
-      if (bytesOut >= WIRE_MAX) {
-        wire->endTransmission();
-        wire->beginTransmission(i2caddr);
-        WIRE_WRITE((uint8_t)0x40);
-        bytesOut = 1;
-      }
-      if (scancol == 0) { /* generate data for new column, else reuse same data */
-        if (--count1 == 0) {
-          uint16_t ch = *(byte *)s++; /* fetch character from string */
-          fp = &font[ch * 5]; /* font pointer */
-          count1 = 6;
-        }
-        if (count1 == 1)
-          data = 0; /* blank last column */
-        else {
-          data = pgm_read_byte(fp++); /* read font column */
-          switch (fontsize) {
-            case 1: break;
-            case 2: data = pgm_read_byte(&expand2[(data >> (4 * scanline)) & 0xf]);
-                    break;
-            case 3: switch (scanline) {
-                      case 0: data = pgm_read_byte(&expand3_0[data & 0x7]); break;
-                      case 1: data = pgm_read_byte(&expand3_1[(data & 0x3c) >> 2]); break;
-                      case 2: data = pgm_read_byte(&expand3_2[(data & 0xe0) >> 6]); break;
-                    }
-                    break;
-            case 4: data = pgm_read_byte(&expand4[(data >> (2 * scanline)) & 0x3]);
-                    break;
-            case 8: data = ((data >> scanline) & 0x1) ? 0xff : 0;
-                    break;
-            default: break;
-          }
-        }
-      }
-      *ptr++ = data; /* write to our backup display RAM */
-      WIRE_WRITE(data);
-      bytesOut++;
-      x++;
-      if (++scancol >= fontsize || x >= WIDTH) {
-        scancol = 0;
-        if (count1 == 1 && *s == '\0' || x >= WIDTH) {
-          if (++y1 >= HEIGHT / 8)
-            break;
-          s = s1; /* restart string */
-          x = x1; /* restart column index */
-          count1 = 1; /* restart font column counter */
-          scanline++;
-          ptr = buffer + WIDTH * y1 + x; /* display RAM is contiguous; buffer not */
-        }
-      }
-    }
-    wire->endTransmission();
-    TRANSACTION_END
-  }
-
-};
-
 // Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
 #define SSD1306_I2C_ADDRESS 0x3c
 Fast_SSD1306 disp(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1, 1000000UL);
 
 #endif
+
+long int now; /* Global time, set at start of loop() for each iteration */
 
 byte transpose = 0;
 byte octave_encoded = OCTAVE_OFFSET;
