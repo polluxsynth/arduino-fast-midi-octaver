@@ -936,13 +936,15 @@ void process_midi(byte data)
 
     channel = data & 0x0f;
 
-    if (channelize) {
-      channel = channelize - 1;
-      /* We usually echo data, so recreate with new channel */
-      data = status | channel;
-    } else if (r_channelize) {
-      channel = (channel + r_channelize) & 0xf;
-      data = status | channel;
+    if (status < 240) { /* Channel messages */
+      if (channelize) {
+        channel = channelize - 1;
+        /* We usually echo data, so recreate with new channel */
+        data = status | channel;
+      } else if (r_channelize) {
+        channel = (channel + r_channelize) & 0xf;
+        data = status | channel;
+      }
     }
 
 #ifdef MIRROR_INCOMING_RUNNING_STATUS
