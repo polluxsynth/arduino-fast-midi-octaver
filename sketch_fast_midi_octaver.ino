@@ -1367,11 +1367,13 @@ void loop() {
 #endif
     }
   }
+#ifdef UI_DISPLAY
 #ifdef MIDIDUMP
   /* print item in MIDI dump buffer if no data arrived for a while */
   /* Caveat: This cold go wrong if the source never shuts off, for instance if is
    * transmitting MIDI clock. */
   if (!setting_parameters && dumpbuf_fill > 0 && now - dump_time_us >= DUMP_TIMEOUT_US)
     display_dump(false);
+#endif
 #endif
 }
