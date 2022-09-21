@@ -289,13 +289,6 @@ void dump(byte data)
 long int led_flash_time;
 long int running_status_time;
 
-#define DESC_CHANNEL_MASK 0x0f
-#define DESC_OCTAVE_MASK 0x70 /* encoded octave */
-#define DESC_OCTAVE_SHIFT 4
-#define DESC_SUSTAIN 0x80 /* sustained by sustain pedal */
-
-byte note_descriptors[128] = { 0 };
-
 struct note {
   byte status;
   byte note;
@@ -349,7 +342,76 @@ class notebits {
     byte m_bits[128 / 8];
 };
 
-notebits sostenuto_held;
+class NoteDescriptors {
+
+#define DESC_CHANNEL_MASK 0x0f
+#define DESC_OCTAVE_MASK 0x70 /* encoded octave */
+#define DESC_OCTAVE_SHIFT 4
+#define DESC_SUSTAIN 0x80 /* sustained by sustain pedal */
+
+  public:
+    NoteDescriptors(void): m_descriptors{0}, m_sostenuto_bits{0}
+    {
+    }
+
+    byte channel(byte note)
+    {
+      return m_descriptors[note] & DESC_CHANNEL_MASK;
+    }
+
+    byte octave(byte note)
+    {
+      return (m_descriptors[note] & DESC_OCTAVE_MASK) >> DESC_OCTAVE_SHIFT;
+    }
+
+    bool sustain(byte note)
+    {
+      return !!(m_descriptors[note] & DESC_SUSTAIN);
+    }
+
+    bool sostenuto_held(byte note)
+    {
+      return m_sostenuto_bits.is_set(note);
+    }
+
+    bool is_set(byte note)
+    {
+      return !!m_descriptors[note];
+    }
+
+    void set(byte note, byte octave, byte channel)
+    {
+      m_descriptors[note] = channel | (octave << DESC_OCTAVE_SHIFT);
+    }
+
+    void set_sustain(byte note)
+    {
+      m_descriptors[note] |= DESC_SUSTAIN;
+    }
+
+    void set_sostenuto_held(byte note)
+    {
+      m_sostenuto_bits.set(note);
+    }
+
+    void clear_sostenuto_held(byte note)
+    {
+      m_sostenuto_bits.clear(note);
+    }
+
+    void clear(byte note)
+    {
+      m_descriptors[note] = 0;
+      m_sostenuto_bits.clear(note);
+    }
+
+  private:
+    byte m_descriptors[128];
+    notebits m_sostenuto_bits;
+};
+
+NoteDescriptors note_descriptors;
+
 
 byte read_octave_switch(void)
 {
@@ -713,8 +775,8 @@ byte apply_note_on_transpose(byte note, byte channel)
       note_transpose -= 12; /* too high, so try an octave lower */
   }
 
-  /* This also clears the DESC_SUSTAIN bit. */
-  note_descriptors[note] = (octave_encoded << DESC_OCTAVE_SHIFT) | channel;
+  /* This implicitly clears the sustain state for the note. */
+  note_descriptors.set(note, octave_encoded, channel);
 
   return note + note_transpose;
 }
@@ -723,13 +785,11 @@ byte apply_note_off_transpose(byte note, bool clear_descriptor_entry)
 {
   byte ret = note;
 
-  if (note_descriptors[note]) /* only perform transpose if descriptor has been set */
-    ret += ((note_descriptors[note] & DESC_OCTAVE_MASK) >> DESC_OCTAVE_SHIFT) * 12 - OCTAVE_OFFSET * 12;
+  if (note_descriptors.is_set(note)) /* only perform transpose if descriptor has been set */
+    ret += note_descriptors.octave(note) * 12 - OCTAVE_OFFSET * 12;
 
-  if (clear_descriptor_entry) { /* Mark the note as released */
-    note_descriptors[note] = 0;
-    sostenuto_held.clear(note);
-  }
+  if (clear_descriptor_entry) /* Mark the note as released */
+    note_descriptors.clear(note);
 
   return ret;
 }
@@ -799,8 +859,8 @@ bool release_sustained_notes(void)
   bool something_sent = false;
 
   for (note = 0; note < 128; note++) {
-    if (note_descriptors[note] & DESC_SUSTAIN) {
-      byte new_status = NOTE_ON | (note_descriptors[note] & DESC_CHANNEL_MASK);
+    if (note_descriptors.sustain(note)) {
+      byte new_status = NOTE_ON | note_descriptors.channel(note);
       // Todo: fix saved note off velocity
       running_status.send(new_status);
       serial_write(apply_note_off_transpose(note, true));
@@ -812,7 +872,7 @@ bool release_sustained_notes(void)
        * to be sostenutod even if the pedal is up.
        * We to this unconditionally even if sostenuto mode is not active, in order to clean up
        * the list in the event of a mode change. */
-      sostenuto_held.clear(note);
+      note_descriptors.clear_sostenuto_held(note);
   }
   return something_sent;
 }
@@ -824,8 +884,8 @@ void set_played_to_sustain(void)
   byte note;
 
   for (note = 0; note < 128; note++) {
-    if (note_descriptors[note])
-      sostenuto_held.set(note);
+    if (note_descriptors.is_set(note))
+      note_descriptors.set_sostenuto_held(note);
   }
 }
 
@@ -1065,10 +1125,10 @@ void process_midi(byte data)
            * would have received a note off for it, the entry in the list would have been cleared
            * (or the source keyboard sent two note ons without an intermediate note off).
            */
-          if (note_descriptors[note]) {
+          if (note_descriptors.is_set(note)) {
             bool same_chtr =
-              ((note_descriptors[note] & DESC_CHANNEL_MASK) == channel &&
-              ((note_descriptors[note] & DESC_OCTAVE_MASK) >> DESC_OCTAVE_SHIFT) == octave_encoded);
+              note_descriptors.channel(note) == channel &&
+              note_descriptors.octave(note) == octave_encoded;
             /* If it's the same channel and transposition, it could potentially be the same
              * note number, so need to send any note off at this point prior to sending the
              * note on, to avoid the note getting chopped off if it's the same note number.
@@ -1077,7 +1137,7 @@ void process_midi(byte data)
              * In any case, we need to apply note off transposition before registering
              * the new note on, so that needs to happen here as well. */
              if (!same_chtr) {
-              queued_note_off.status = NOTE_ON | (note_descriptors[note] & DESC_CHANNEL_MASK);
+              queued_note_off.status = NOTE_ON | note_descriptors.channel(note);
               queued_note_off.note = apply_note_off_transpose(note, true);
              }
 #ifdef SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE
@@ -1109,7 +1169,7 @@ void process_midi(byte data)
              * This means that the first note off when entering low latency mode cannot be
              * held by the sustain pedal emulation function.
              * All that remains to do here is mark it as released in the note descriptor list. */
-            note_descriptors[note] = 0;
+            note_descriptors.clear(note);
             queued_note_off.status = 0;
             /* There is a slight issue here in that in the transition to !low_latency_mode, we've
              * already sent a note off (if SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE was set),
@@ -1123,10 +1183,10 @@ void process_midi(byte data)
           }
         } else { /* !low_latency_mode */
           if (data) { /* true note on */
-            if (note_descriptors[note]) {
+            if (note_descriptors.is_set(note)) {
               bool same_chtr =
-                ((note_descriptors[note] & DESC_CHANNEL_MASK) == channel &&
-                ((note_descriptors[note] & DESC_OCTAVE_MASK) >> DESC_OCTAVE_SHIFT) == octave_encoded);
+                note_descriptors.channel(note) == channel &&
+                note_descriptors.octave(note) == octave_encoded;
               /* If it's the same channel and transposition, it could potentially be the same
                * note number, so need to send any note off at this point prior to sending the
                * note on, to avoid the note getting chopped off if it's the same note number.
@@ -1137,7 +1197,7 @@ void process_midi(byte data)
                * Even in low latency mode, we queue this up if we can, so that the ongoing
                * note on gets priority. */
               if (!same_chtr) {
-                queued_note_off.status = NOTE_ON | (note_descriptors[note] & DESC_CHANNEL_MASK);
+                queued_note_off.status = NOTE_ON | note_descriptors.channel(note);
                 queued_note_off.note = apply_note_off_transpose(note, true);
               }
 #ifdef SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE
@@ -1160,12 +1220,12 @@ void process_midi(byte data)
           } else { /* note off */
             /* In sostenuto mode, only skip note offs that are not already sustaining */
             if (sustaining &&
-                (!MODE_SET(MODE_SPE_SOSTENUTO)) || sostenuto_held.is_set(note)) {
+                (!MODE_SET(MODE_SPE_SOSTENUTO)) || note_descriptors.sostenuto_held(note)) {
               skip = true;
-              note_descriptors[note] |= DESC_SUSTAIN; /* indicate note off received and skipped */
+              note_descriptors.set_sustain(note); /* indicate note off received and skipped */
             } else {
-              byte new_status = NOTE_ON | (note_descriptors[data] ?
-                                           (note_descriptors[data] & DESC_CHANNEL_MASK) :
+              byte new_status = NOTE_ON | (note_descriptors.is_set(note) ?
+                                           note_descriptors.channel(note) :
                                            channel);
               running_status.send(new_status, fresh_status_byte);
               serial_write(apply_note_off_transpose(note, true));
@@ -1177,15 +1237,15 @@ void process_midi(byte data)
       case STATE_NOTE_OFF_NOTE:
         note = data; /* also for later */
         if (sustaining &&
-            (!MODE_SET(MODE_SPE_SOSTENUTO)) || sostenuto_held.is_set(note)) {
+            (!MODE_SET(MODE_SPE_SOSTENUTO)) || note_descriptors.sostenuto_held(note)) {
           skip = true;
-          note_descriptors[note] |= DESC_SUSTAIN; /* indicate note off received and skipped */
+          note_descriptors.set_sustain(note); /* indicate note off received and skipped */
         } else {
 #ifdef HANDLE_CHANNEL
           /* Now it's time to send our note off status. */
           {
-            byte new_status = NOTE_OFF | (note_descriptors[note] ?
-                                          (note_descriptors[note] & DESC_CHANNEL_MASK) :
+            byte new_status = NOTE_OFF | (note_descriptors.is_set(note) ?
+                                          note_descriptors.channel(note) :
                                           channel);
              /* We honor running status here, as we potentially need to insert a status byte, if the
               * incoming stream employs running status while the transpose is being changed, so we
@@ -1199,7 +1259,7 @@ void process_midi(byte data)
         break;
       case STATE_NOTE_OFF_VEL:
         if (sustaining &&
-            (!MODE_SET(MODE_SPE_SOSTENUTO)) || sostenuto_held.is_set(note))
+            (!MODE_SET(MODE_SPE_SOSTENUTO)) || note_descriptors.sostenuto_held(note))
           skip = true;
         else
           fresh_status_byte = false; /* next non-status will employ running status */
