@@ -237,6 +237,7 @@ byte octave_prev = 0;
 bool low_latency_mode = true;
 
 byte channelize = 0;
+byte r_channelize = 0;
 
 enum mode_flags {
   MODE_SPE = 0,
@@ -382,12 +383,29 @@ struct screen_def {
   void (*val_func)(const struct screen_def *, byte);
 };
 
+/* off or MIDI channel 1..16 */
 void chan_val(/* PROGMEM */ const struct screen_def *screen, byte keyval)
 {
   byte *value_ptr = pgm_read_ptr(&screen->value);
   byte newval = *value_ptr * 10 + keyval;
 
   if (newval > 16)
+    *value_ptr = keyval;
+  else
+    *value_ptr = newval;
+}
+
+/* off or relative MIDI channel +1..+15 */
+/* If channelize is set, don't accept any input, as we just display "off" anyway */
+void rchan_val(/* PROGMEM */ const struct screen_def *screen, byte keyval)
+{
+  if (channelize)
+    return;
+
+  byte *value_ptr = pgm_read_ptr(&screen->value);
+  byte newval = *value_ptr * 10 + keyval;
+
+  if (newval > 15)
     *value_ptr = keyval;
   else
     *value_ptr = newval;
@@ -442,24 +460,42 @@ void octave_str(/* PROGMEM */ const struct screen_def *screen, char *buffer)
 
 const char off_s[] PROGMEM = "off";
 
+void num_str(byte value, char *buffer, bool erase_after)
+{
+  byte pval = value;
+
+  if (value >= 10) {
+    *buffer++ = '1';
+    pval -= 10;
+  }
+  *buffer++ = pval + '0';
+  if (value < 10)
+    *buffer++ = ' '; /* erase any old character */
+  if (erase_after)
+    *buffer++ = ' '; /* erase any old character */
+  *buffer = '\0';
+}
+
 void chan_str(/* PROGMEM */ const struct screen_def *screen, char *buffer)
 {
   byte value = get_value(screen);
-  byte pval = value;
 
-  if (value) {
-    if (value >= 10) {
-      *buffer++ = '1';
-      pval -= 10;
-    }
-    *buffer++ = pval + '0';
-    if (value < 10)
-      *buffer++ = ' '; /* erase any old character */
-    *buffer++ = ' '; /* erase any old character */
-    *buffer = '\0';
-  } else {
+  if (value)
+    num_str(value, buffer, true);
+  else
     strcpy_P(buffer, off_s);
-  }
+}
+
+/* Print relative channelize value. If channelize is set, print off, as it won't be active */
+void rchan_str(/* PROGMEM */ const struct screen_def *screen, char *buffer)
+{
+  byte value = get_value(screen);
+
+  if (value && !channelize) {
+    *buffer++ = '+';;
+    num_str(value, buffer, false);
+  } else
+    strcpy_P(buffer, off_s);
 }
 
 void string_str(/* PROGMEM */ const struct screen_def *screen, const char * const text[], char *buffer)
@@ -490,6 +526,7 @@ void dump_str(/* PROGMEM */ const struct screen_def *screen, char *buffer)
  * the display before when printed. */
 const char octave_s[] PROGMEM = "Octave ";
 const char channelize_s[] PROGMEM = "Channelize";
+const char r_channelize_s[] PROGMEM = "R-Channel ";
 #ifdef EMULATE_SUSTAIN_PEDAL
 const char sust_ped_e_s[] PROGMEM = "Sust Ped E";
 const char spe_avoid_stackup_s[] PROGMEM = "SPE Max 1 ";
@@ -518,6 +555,11 @@ PROGMEM const struct screen_def settings_screens[] = {
     channelize_s, chan_str,
 #endif
                              &channelize, 0, 255, chan_val },
+  {
+#ifdef UI_DISPLAY
+    r_channelize_s, rchan_str,
+#endif
+                             &r_channelize, 0, 255, rchan_val },
 #ifdef EMULATE_SUSTAIN_PEDAL
   {
 #ifdef UI_DISPLAY
@@ -896,7 +938,10 @@ void process_midi(byte data)
 
     if (channelize) {
       channel = channelize - 1;
-      /* We echo and process data, so recreate with new channel */
+      /* We usually echo data, so recreate with new channel */
+      data = status | channel;
+    } else if (r_channelize) {
+      channel = (channel + r_channelize) & 0xf;
       data = status | channel;
     }
 
