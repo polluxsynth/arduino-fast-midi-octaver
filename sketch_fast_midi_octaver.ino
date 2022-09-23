@@ -749,6 +749,12 @@ void display_screen(/* PROGMEM */ const struct screen_def *screen)
         if (channelize < 10)
           *s++ = 'h';
         itoa(channelize, s, 10);
+      } else if (r_channelize) {
+        char *s = strbuf;
+        if (r_channelize < 10)
+          *s++ = 'C';
+        *s++ = '+';
+        itoa(r_channelize, s, 10);
       } else
         strcpy_P(strbuf, triple_space_s);
       disp.printDirect(HEADER_X + HEADER2_OFFSET, HEADER_Y + 32 + 8, strbuf, HEADER_TEXTSIZE);
