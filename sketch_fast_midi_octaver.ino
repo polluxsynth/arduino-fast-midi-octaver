@@ -1207,16 +1207,15 @@ void process_midi(byte data)
                 queued_note_off.note = apply_note_off_transpose(note, true);
               }
 #ifdef SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE
-                else {
+                else if (MODE_SET(MODE_SPE_AVOID_STACKUP)) {
                 /* Same channel and transpose. Send a note off immediately to avoid the voices
                  * stacking up, which is nice, but can cause synths to run out of voices (depending
-                 * on how the voice allocation algorithm is implemented).
-                 * Todo: Have this as a switchable option, also as it adds latency.
-                 */
+                 * on how the voice allocation algorithm is implemented). */
                  running_status.send(NOTE_ON | channel, fresh_status_byte);
                  serial_write(apply_note_off_transpose(note, false));
                  serial_write(0); /* note off */
-                 /* we utilize running status here, for the note on currentl in progress */
+                 fresh_status_byte = false;
+                 /* we utilize running status here, for the note on currently in progress */
               }
 #endif
             }
