@@ -13,7 +13,10 @@ D0 and D1, respectively, on an Arduino UNO.
 
 # Octaver
 
-The basic functionality is a fast (low latency - 320 µs) octave transposer.
+The basic functionality is a fast (low latency - 320 µs) octave transposer,
+which can shift the octave of the notes in the MIDI stream by
+-3 (only when parameter setting is not enabled build time in the code),
+-2, -1, 0, +1 or +2 octaves.
 
 The lowest latency is achieved with keyboards which output MIDI Note Off
 messages for note off events, rather than MIDI Note on messages with the
@@ -25,6 +28,18 @@ in the incoming MIDI stream. Normal mode is indicated by the MIDI LED
 (connected to the LED_BUILTIN (D13) pin on the Arduino) being inverted, i.e.
 normally on, and flashes off when MIDI data is seen. In low latency mode,
 the MIDI LED is normally off, and flashes on for MIDI data.
+
+A salient feature of the octaver is to handle the cases of either the source
+MIDI channel being changed between the note on and subsequent note off
+message, or the octave being changed under these conditions. The
+octaver saves the original transposition and MIDI channel of the note on,
+and transmits the note off on the appropriate MIDI channel and with the
+appropriate tranposition. This avoids any hung notes, and also allows
+for creative use of the octaver, for instance by playing a low note, then
+switching the transposer to a higher octave and play high notes while holding
+the low note.
+
+Note that MIDI key pressure messages are currently not transposed.
 
 # Other features
 
@@ -95,7 +110,23 @@ connected instruments. Furthermore, any incoming MIDI will disrupt the
 uploading process. The easiest solution to these issues is to disconnect
 the MIDI IN and OUT connectors while uploading sketches to the device.
 
-## Connections
+## Dependencies
+
+Unintuitively, the code is not dependent on the Arduino MIDI library.
+Because of the byte-level manipulation of MIDI data, due in part to the
+minimization of throughput latency, the MIDI library is not suitable.
+
+For the display, in order to permit printing out MIDI byte values
+in real time without adding undue delay to the MIDI stream, parts
+of the Adafruit_SSD1306 library have been refactored into a fast
+(albeit limited) display printing class. There is still a dependency
+on the underlying Adafruit_GFX library in the form of the font
+used for printouts, and there is also a formal (due to licensing
+requirements) dependency on the Adafruit_SSD1306 because of the
+re-use of the code, although there are no actual functional dependencies
+on either of these libraries.
+
+## Hardware
 
 The Arduino pins are used as follows:
 
@@ -107,6 +138,6 @@ D4 -  Input: Ground for Octave -1
 D5 -  Input: Ground for Octave 0
 D6 -  Input: Ground for Octave +1
 D7 -  Input: Ground for Octave +2
-D13 - MIDI activity LED (connect LED to ground).
+D13 - MIDI activity LED anode (active high)
 A4 -  OLED display SDA
 A5 -  OLED display SCL
