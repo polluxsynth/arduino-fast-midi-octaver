@@ -201,11 +201,23 @@
 #define STATE_CC_VAL           6
 
 /* MIDI status bytes */
-#define NOTE_OFF 128
-#define NOTE_ON 144
-#define CONTROL_CHANGE 176
-#define CC_SUSTAIN_PEDAL 64
+#define NOTE_OFF 128 /* 2 data bytes */
+#define NOTE_ON 144 /* 2 data bytes */
+#define KEY_PRESSURE 160 /* 2 data bytes */
+#define CONTROL_CHANGE 176 /* 2 data bytes */
+#define PROGRAM_CHANGE 192 /* 1 data byte */
+#define CHANNEL_PRESSURE 208 /* 1 data bytes */
+#define PITCHBEND 224 /* 2 data bytes */
+#define SYSEX 240 /* data until EOX or other non-realtime status */
+#define TIME_CODE 241 /* 4 data bytes */
+#define SONG_POSITION 242 /* 2 data bytes */
+#define SONG_SELECT 243 /* 1 data byte */
+#define TUNE_REQUEST 246 /* No data byte */
+#define EOX 247 /* End Of Exclusive */
 #define REALTIME 248 /* This and above */
+
+#define CC_MOD_WHEEL 1
+#define CC_SUSTAIN_PEDAL 64
 
 #ifdef UI_DISPLAY
 
