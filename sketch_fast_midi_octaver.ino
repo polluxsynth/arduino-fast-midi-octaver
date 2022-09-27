@@ -823,50 +823,58 @@ void serial_write(byte data)
 #endif
 }
 
-class RunningStatus {
+class MidiOutput {
 
 public:
   /* Constructor */
-  RunningStatus(void) : m_running_status(0), m_last_status(0)
+  MidiOutput(void) : m_running_status(0), m_previous_byte(0)
   {
   }
 
+  bool send_data(byte data)
+  {
+    m_previous_byte = data;
+    serial_write(data);
+  }
+
   /* Send status byte, honoring running status, unless fresh_status_byte is set.
+   * If same as previous status byte, don't send, unless it's a realtime byte, which don't
+   * have data bytes, and several of which can be sent multiple times in a row.
+   * This handles the case of a status byte having been echoed through the device,
+   * and a subsequent data byte having triggered sending an identical status byte,
+   * with running status disabled for whatever reason (fresh_status_byte set, or
+   * clear_running_status() called in the interim).
    * Return true if byte was actually sent, false otherwise
    */
-  bool send(byte status, bool fresh_status_byte)
+  bool send_status(byte status, bool fresh_status_byte)
   {
-    if (status != m_running_status || fresh_status_byte) {
-      m_running_status = m_last_status = status;
-      serial_write(status);
+    if ((status != m_running_status || fresh_status_byte) &&
+        (status != m_previous_byte || status >= REALTIME)) {
+      m_running_status = status;
+      send_data(status);
       return true;
     }
     return false;
   }
 
   /* When fresh_status_byte not set it defaults to false */
-  bool send(byte status)
+  bool send_status(byte status)
   {
-    return send(status, false);
+    return send_status(status, false);
   }
 
   /* Return last sent sent status */
-  byte last_status(void)
-  {
-    return m_last_status;
-  }
-
-  void clear(void)
+  void clear_running_status(void)
   {
     m_running_status = 0;
   }
 
 private:
   byte m_running_status;
-  byte m_last_status;
+  byte m_previous_byte;
 };
 
-RunningStatus running_status;
+MidiOutput midi_output;
 
 /* Release all notes marked as sustained in the desciptor list.
  * Return true of something actually was sent.
@@ -880,9 +888,9 @@ bool release_sustained_notes(void)
     if (note_descriptors.sustain(note)) {
       byte new_status = NOTE_ON | note_descriptors.channel(note);
       // Todo: fix saved note off velocity
-      running_status.send(new_status);
-      serial_write(apply_note_off_transpose(note, true));
-      serial_write(0); /* vel = 0 >= note off */
+      midi_output.send_status(new_status);
+      midi_output.send_data(apply_note_off_transpose(note, true));
+      midi_output.send_data(0); /* vel = 0 >= note off */
       something_sent = true;
     } else
       /* When releasing pedal, the sostenuto bit for notes that are still playing because the
@@ -1122,22 +1130,11 @@ void process_midi(byte data)
            * a note off on a different channel (a queued_note_off). We can't unconditionally send
            * a note on status here, because if the currently ongoing message did include a note on,
            * it will be sent twice, The running status processing would technically take care of this,
-           * but that fails if our running status timeout hits at precisely this time. Therefore, we
-           * have the slightly odd situation here that if the last sent status is not the same as
-           * what would be used for the currently ongoing message, we send a new status message,
-           * which is similar to how running status works, except that this also works if running
-           * status for whatever reason (most likely, the running status timeout hit) is disabled.
-           * On the face of it, it looks like this would allow us to send two status bytes back
-           * to back, but the only way the status could be different is if running status is
-           * employed and the previously sent message was a queued note off; if the ongoing message
-           * was the last status sent, the channel will be unchanged and consequently the status
-           * byte will be unchanged as well, and no extra status byte will be sent.
-           * (Case in point: Zynthian upon receiving a double note on status bytes will behave oddly,
-           * confusing subequent note on and off messages.)
+           * but that fails if our running status timeout hits at precisely this time.
+           * Previously, this special case was handled in the code here, but this is now handled by
+           * the MidiOutput class.
            */
-          byte new_status = NOTE_ON | channel;
-          if (running_status.last_status() != new_status)
-            running_status.send(new_status);
+          midi_output.send_status(NOTE_ON | channel);
           /* If we find that there is already an active note for the source note number,
            * send a note off message. This means that the note is sustained, as otherwise when we
            * would have received a note off for it, the entry in the list would have been cleared
@@ -1163,8 +1160,8 @@ void process_midi(byte data)
               /* Same channel and transpose. Send a note off immediately to avoid the voices
                * stacking up, which is nice, but can cause synths to run out of voices (depending
                * on how the voice allocation algorithm is implemented). */
-               serial_write(apply_note_off_transpose(note, false));
-               serial_write(0); /* note off */
+               midi_output.send_data(apply_note_off_transpose(note, false));
+               midi_output.send_data(0); /* note off */
                /* we utilize running status here, for the note on currently in progress */
              }
 #endif
@@ -1223,17 +1220,17 @@ void process_midi(byte data)
                 /* Same channel and transpose. Send a note off immediately to avoid the voices
                  * stacking up, which is nice, but can cause synths to run out of voices (depending
                  * on how the voice allocation algorithm is implemented). */
-                 running_status.send(NOTE_ON | channel, fresh_status_byte);
-                 serial_write(apply_note_off_transpose(note, false));
-                 serial_write(0); /* note off */
+                 midi_output.send_status(NOTE_ON | channel, fresh_status_byte);
+                 midi_output.send_data(apply_note_off_transpose(note, false));
+                 midi_output.send_data(0); /* note off */
                  fresh_status_byte = false;
                  /* we utilize running status here, for the note on currently in progress */
               }
 #endif
             }
             /* Note on: Time to send note on message: send status + note no here, vel further on */
-            running_status.send(NOTE_ON | channel, fresh_status_byte);
-            serial_write(apply_note_on_transpose(note, channel));
+            midi_output.send_status(NOTE_ON | channel, fresh_status_byte);
+            midi_output.send_data(apply_note_on_transpose(note, channel));
           } else { /* note off */
             /* In sostenuto mode, only skip note offs that are not already sustaining */
             if (sustaining &&
@@ -1244,8 +1241,8 @@ void process_midi(byte data)
               byte new_status = NOTE_ON | (note_descriptors.is_set(note) ?
                                            note_descriptors.channel(note) :
                                            channel);
-              running_status.send(new_status, fresh_status_byte);
-              serial_write(apply_note_off_transpose(note, true));
+              midi_output.send_status(new_status, fresh_status_byte);
+              midi_output.send_data(apply_note_off_transpose(note, true));
             }
           }
         }
@@ -1268,7 +1265,7 @@ void process_midi(byte data)
               * incoming stream employs running status while the transpose is being changed, so we
               * want to minimize the number of inserted bytes added.
               */
-            running_status.send(new_status, fresh_status_byte);
+            midi_output.send_status(new_status, fresh_status_byte);
           }
 #endif
           data = apply_note_off_transpose(note, true);
@@ -1298,8 +1295,8 @@ void process_midi(byte data)
           /* We've got CC + address, so send it on */
           /* Value will be sent when we get it */
           byte new_status = CONTROL_CHANGE | channel;
-          running_status.send(new_status, fresh_status_byte ||
-                                          data == CC_SUSTAIN_PEDAL && MODE_SET(MODE_CC_PED_NRS));
+          midi_output.send_status(new_status, fresh_status_byte ||
+                                              data == CC_SUSTAIN_PEDAL && MODE_SET(MODE_CC_PED_NRS));
         }
         break;
       case STATE_CC_VAL:
@@ -1343,21 +1340,21 @@ void process_midi(byte data)
   if (!skip) {
     if ((data & 0x80) && data < 248) { /* Status messages that are not realtime */
       if (data < 240) {
-        running_status.send(data, fresh_status_byte);
+        midi_output.send_status(data, fresh_status_byte);
       } else {
-        serial_write(data);
-        running_status.clear();
+        midi_output.send_data(data);
+        midi_output.clear_running_status();
       }
     } else {
-      serial_write(data); /* realtime or data byte */
+      midi_output.send_data(data); /* realtime or data byte */
     }
   }
   if (trigger_queued_note_off) {
     /* When we end up here, it's because we've just sent a note on, and need to send a note off
      * for the note previously occupying the note descriptor, to avoid it hanging. */
-    running_status.send(queued_note_off.status);
-    serial_write(queued_note_off.note);
-    serial_write(0); /* => note off */
+    midi_output.send_status(queued_note_off.status);
+    midi_output.send_data(queued_note_off.note);
+    midi_output.send_data(0); /* => note off */
     queued_note_off.status = 0;
   }
 }
@@ -1380,7 +1377,7 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
 
   running_status_time = led_flash_time = micros();
-  running_status.clear(); /* outgoing running status */
+  midi_output.clear_running_status();
 }
 
 void loop() {
@@ -1396,7 +1393,7 @@ void loop() {
 #ifdef RUNNING_STATUS_TIMEOUT_US
   if (now - running_status_time > RUNNING_STATUS_TIMEOUT_US)
   {
-    running_status.clear(); /* force next message status byte to be sent */
+    midi_output.clear_running_status(); /* force next message status byte to be sent */
     running_status_time = now; /* reset timer */
   }
 #endif
