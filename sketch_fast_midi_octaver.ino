@@ -192,6 +192,11 @@
 /* LED flash time */
 #define LED_FLASH_US 10000
 
+/* Modulaton wheel support: Output modwheel connected to pin A0 */
+#undef MODWHEEL
+#define MODWHEEL_PIN A0
+#define MODWHEEL_TIMEOUT_US 5000 /* 5 ms intervals */
+
 #define STATE_PASS             0
 #define STATE_PASS_CHANNEL_MSG 1
 #define STATE_NOTE_ON_NOTE     2
@@ -244,6 +249,8 @@ Fast_SSD1306 disp(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1, 1000000UL);
 
 long int now; /* Global time, set at start of loop() for each iteration */
 
+byte channel; /* last received MIDI channel 0..15 */
+
 byte transpose = 0;
 byte octave_encoded = OCTAVE_OFFSET;
 byte octave_prev = 0;
@@ -272,6 +279,14 @@ bool setting_parameters = false;
 bool setting_parameters_prev = false;
 
 byte settings_screen = 0; /* first screen in settings_screens (Channelize) */
+
+// defines for setting and clearing register bits
+#ifndef cbi
+#define cbi(sfr, bit) (_SFR_BYTE(sfr) &= ~_BV(bit))
+#endif
+#ifndef sbi
+#define sbi(sfr, bit) (_SFR_BYTE(sfr) |= _BV(bit))
+#endif
 
 #ifdef MIDIDUMP
 /* The idea behind DUMP_TIMOUT_US is to wait a while after receiving MIDI data when
@@ -813,9 +828,71 @@ byte apply_note_off_transpose(byte note, bool clear_descriptor_entry)
   return ret;
 }
 
+/* Track a MIDI stream, keeping track of when it is possible to insert other
+ * messages into the stream. */
+class Tracker {
+public:
+  Tracker(void): m_data_bytes(0), m_data_counter(0), m_can_interject(false)
+  {
+  }
+
+  void track(byte data)
+  {
+    if (data & 128) { /* status byte */
+      if (data < REALTIME) { /* REALTIME messages can always be interjected */
+        if (data >= SYSEX) { /* System common have no running status, but do have length */
+          m_data_counter == 0; /* default, including SYSEX */
+          if (data == TIME_CODE || data == SONG_SELECT)
+            m_data_counter = 1;
+          else if (data == SONG_POSITION)
+            m_data_counter = 2;
+          m_data_bytes = 0; /* No running status, wait indefinitely after end of message */
+        } else { /* Channel status messages */
+          byte status = data & 0xf0;
+          if (status == PROGRAM_CHANGE || status == CHANNEL_PRESSURE)
+            m_data_counter = 1;
+          else
+            m_data_counter = 2; /* Note on/off, CC, pitch bend, key press */
+          m_data_bytes = m_data_counter; /* repeat count if running status employed */
+        }
+        /* In any case, a non-REALTIME status byte with expected data bytes is the start of a message.
+         * For SYSEX we don't know the number of data bytes (message terminated by EOX) */
+        if (m_data_counter || data == SYSEX)
+          m_can_interject = false;
+        else
+          m_can_interject = true;
+      }
+    } else { /* data byte */
+      if (m_data_counter) { /* Either because status byte received, or running status (below) */
+        if (!--m_data_counter) {
+          m_can_interject = true;
+          m_data_counter = m_data_bytes; /* re-set in the event of running status */
+        } else
+          m_can_interject = false;
+      }
+    }
+  }
+
+  bool can_interject(void)
+  {
+    return m_can_interject;
+  }
+
+private:
+  byte m_data_bytes, m_data_counter;
+  bool m_can_interject;
+};
+
+#ifdef MODWHEEL
+Tracker tracker;
+#endif
+
 void serial_write(byte data)
 {
   Serial.write(data);
+#ifdef MODWHEEL
+  tracker.track(data); /* track outgoing data so we can interject modwheel message when needed */
+#endif
 #ifdef MIDIDUMP
   if (dump_mode == DUMPMODE_OUT) {
     dump(data);
@@ -997,7 +1074,8 @@ void process_setting(byte data)
 
 void process_midi(byte data)
 {
-  static byte status = 0, channel = 0, prev_channel = -1; /* prev_channel for previous note on */
+  /* static byte channel - global so modwheel can access it */
+  static byte status = 0, prev_channel = -1; /* prev_channel for previous note on */
   static byte prev_octave_encoded = -1; /* transposition for previous note on */
   static byte state = STATE_PASS;
   static byte note; /* saved note across note on/off message reception, in !low_latency_mode */
@@ -1380,8 +1458,64 @@ void process_midi(byte data)
   }
 }
 
+#ifdef MODWHEEL
+class Modwheel
+{
+public:
+  Modwheel(void): m_old_raw_wheel(0), m_modwheel_time(0), m_modwheel_updated(false), m_modwheel(0)
+  {
+  }
+
+  void begin(int pin, long int now)
+  {
+    /* Set A/D clock prescaler to 16 (default is 128), to get 77 kHz sample
+     * rate for A/D, which gives us a nice fast read cycle of about 13 us
+     * with sufficient resolution.
+     * From https://forum.arduino.cc/t/faster-analog-read/6604 */
+    sbi(ADCSRA, ADPS2);
+    cbi(ADCSRA, ADPS1);
+    cbi(ADCSRA, ADPS0);
+
+    m_pin = pin;
+
+    m_modwheel_time = now;
+  }
+
+  void process(long int now, byte channel)
+  {
+    if (now - m_modwheel_time > MODWHEEL_TIMEOUT_US) {
+      byte raw_wheel = analogRead(m_pin) >> 2; /* Scale from 0..1023 to 0..255 */
+      byte diff = raw_wheel - m_old_raw_wheel + 1; /* diff -1..+1 -> 0..+2 */
+      if (diff > 2) {
+        m_old_raw_wheel = raw_wheel;
+        m_modwheel = raw_wheel >> 1; /* 0..127 */
+        m_modwheel_updated = true;
+      }
+      m_modwheel_time = now;
+    }
+    if (m_modwheel_updated && tracker.can_interject()) {
+      midi_output.send_status(CONTROL_CHANGE | channel);
+      midi_output.send_data(CC_MOD_WHEEL);
+      midi_output.send_data(m_modwheel);
+      m_modwheel_updated = false;
+    }
+  }
+
+private:
+  byte m_old_raw_wheel; /* previously read raw value from A/D */
+  long int m_modwheel_time; /* last time we read the modwheel */
+  bool m_modwheel_updated; /* set when value changed, until we have transmitted it */
+  byte m_modwheel; /* current modwheel value 0..127 */
+  int m_pin; /* Arduino pin number */
+};
+
+Modwheel modwheel;
+#endif
+
 void setup() {
   // put your setup code here, to run once:
+  now = micros();
+
   Serial.begin(31250);
 #ifdef UI_DISPLAY
   disp.begin(SSD1306_SWITCHCAPVCC, SSD1306_I2C_ADDRESS);
@@ -1399,6 +1533,10 @@ void setup() {
 
   running_status_time = led_flash_time = micros();
   midi_output.clear_running_status();
+
+#ifdef MODWHEEL
+  modwheel.begin(MODWHEEL_PIN, now);
+#endif
 }
 
 void loop() {
@@ -1462,6 +1600,9 @@ void loop() {
 #endif
     }
   }
+#ifdef MODWHEEL
+  modwheel.process(now, channel);
+#endif
 #ifdef UI_DISPLAY
 #ifdef MIDIDUMP
   /* print item in MIDI dump buffer if no data arrived for a while */

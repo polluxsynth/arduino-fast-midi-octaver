@@ -110,6 +110,13 @@ connected instruments. Furthermore, any incoming MIDI will disrupt the
 uploading process. The easiest solution to these issues is to disconnect
 the MIDI IN and OUT connectors while uploading sketches to the device.
 
+## Modwheel
+
+Not enabled by default, the Modwheel support enables the value output from a
+potentiometer connected to the appropriate pin (default A0, 0..5V) on the
+Arduino to be inserted into the MIDI stream as MIDI Control Change #1 (mod
+wheel). Enable by #defining MODWHEEL.
+
 ## Dependencies
 
 Unintuitively, the code is not dependent on the Arduino MIDI library.
