@@ -193,12 +193,13 @@
 #define LED_FLASH_US 10000
 
 #define STATE_PASS             0
-#define STATE_NOTE_ON_NOTE     1
-#define STATE_NOTE_ON_VEL      2
-#define STATE_NOTE_OFF_NOTE    3
-#define STATE_NOTE_OFF_VEL     4
-#define STATE_CC_ADDR          5
-#define STATE_CC_VAL           6
+#define STATE_PASS_CHANNEL_MSG 1
+#define STATE_NOTE_ON_NOTE     2
+#define STATE_NOTE_ON_VEL      3
+#define STATE_NOTE_OFF_NOTE    4
+#define STATE_NOTE_OFF_VEL     5
+#define STATE_CC_ADDR          6
+#define STATE_CC_VAL           7
 
 /* MIDI status bytes */
 #define NOTE_OFF 128 /* 2 data bytes */
@@ -996,7 +997,7 @@ void process_setting(byte data)
 
 void process_midi(byte data)
 {
-  static byte channel, prev_channel = -1; /* last received channel, and one for previous note on */
+  static byte status = 0, channel = 0, prev_channel = -1; /* prev_channel for previous note on */
   static byte prev_octave_encoded = -1; /* transposition for previous note on */
   static byte state = STATE_PASS;
   static byte note; /* saved note across note on/off message reception, in !low_latency_mode */
@@ -1009,6 +1010,7 @@ void process_midi(byte data)
   static bool sustaining = false;
   bool skip = false;
   bool trigger_queued_note_off = false;
+  byte pass_state_count = 0, pass_state_bytes = 0;
 
   /* Normally data received is echoed just after the if clause, unless for some
    * reason processing needs to be delayed (note off messages, note on messages in
@@ -1018,8 +1020,7 @@ void process_midi(byte data)
    * the normal echoing of the final data byte.
    */
   if (data & 0x80) { /* MIDI status byte */
-    byte status = data & 0xf0;
-
+    status = data & 0xf0;
     channel = data & 0x0f;
 
     if (status < 240) { /* Channel messages */
@@ -1049,7 +1050,7 @@ void process_midi(byte data)
       input_running_status = false;
 #endif
 
-    /* Track note on/off status. All other channel messages just get sent
+    /* Track note on/off and control change. All other channel messages just get sent
      * through.
      */
     if (status == NOTE_ON) {
@@ -1100,8 +1101,15 @@ void process_midi(byte data)
       skip = true;
     }
 #endif
-    /* All other (channel and system) messages pass through */
-    else if (status <= REALTIME)
+    /* All other (channel, system and realtime) messages pass through */
+    else if (status < 240) { /* Only channel messages have running status */
+      state = STATE_PASS_CHANNEL_MSG;
+      if (status == PROGRAM_CHANGE || status == CHANNEL_PRESSURE)
+        pass_state_bytes = 1;
+      else
+        pass_state_bytes = 2;
+      pass_state_count = 0;
+    } else /* System common - no running status, just echo in pass state */
       state = STATE_PASS;
   } else { /* MIDI data byte */
     switch (state) {
@@ -1318,6 +1326,19 @@ void process_midi(byte data)
         fresh_status_byte = false; /* set for next CC_ADDR state */
         break;
 #endif
+      case STATE_PASS_CHANNEL_MSG:
+        /* If we're about to echo a data byte, potentially output a status byte
+         * in case something was interjected (e.g. modwheel). The midi_output class
+         * will take care to avoid duplicate status bytes being sent, and also skip
+         * sending the status byte when running status is in effect. */
+        if (pass_state_count == 0)
+          midi_output.send_status(status | channel);
+        /* Count expected data bytes, and reset pass_state_count in order to handle running status */
+        if (++pass_state_count >= pass_state_bytes)
+          pass_state_count = 0;
+        break;
+        /* fallthrough */
+      case STATE_PASS:
       default: /* Do nothing, just echo byte received */
         break;
     }
