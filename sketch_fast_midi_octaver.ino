@@ -110,7 +110,7 @@
  * (channel is always remembered in normal latency mode as it doesn't add any latency).
  * This adds a further 320 us latency to note off messages.
  */
-#define HANDLE_CHANNEL
+#undef HANDLE_CHANNEL
 
 /* Skip CC 22, 23, 24. The Radikal Technologies Accelerator seems to output this spuriously
  * with values of 64 or 65, especially 22, even when the transmit accelerometer parameter
@@ -131,18 +131,18 @@
  * of whether running status is employed by the source or not, or MIRROR_INCOMING_RUNNING_STATUS
  * is set or not.
  */
-#define EMULATE_SUSTAIN_PEDAL
+#undef EMULATE_SUSTAIN_PEDAL
 /* Sub modes: */
 /* When repeated notes received while sustaing for the same note with the same transpose/channel
  * as previous note, send note off to avoid stacking up voices. */
-#define SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE
+#undef SEND_NOTE_OFF_FOR_EACH_SUSTAINED_NOTE
 /* Set this to release all sustained notes whenever a note is received with a channel and/or
  * transpose setting differing from the previous note received. */
-#define RELEASE_ALL_NOTES_WHEN_CHANNEL_OR_OCTAVE_CHANGED
+#undef RELEASE_ALL_NOTES_WHEN_CHANNEL_OR_OCTAVE_CHANGED
 /* Setting this means that the sustain pedal is considered up once a note on a different channel
  * is received than before. The pedal is not considered to have transitioned from down to up though,
  * so previously held notes are still held, but will be released when the pedal is released. */
-#define DONT_SUSTAIN_WHEN_NOTE_CHANNEL_CHANGED
+#undef DONT_SUSTAIN_WHEN_NOTE_CHANNEL_CHANGED
 
 /* Dependencies */
 
@@ -163,17 +163,17 @@
 /* Define this to enable the setting of parameters. When not set, the lowest octave
  * setting will be replaced by the parameter setting mode.
  */
-#define ENABLE_PARAMETER_SETTING
+#undef ENABLE_PARAMETER_SETTING
 
 /* Define this to enable MIDI dumps. */
-#define MIDIDUMP
+#undef MIDIDUMP
 #define DUMPBUF_SIZE 12
 
 /* Define this to enable runtime parameter display, on an SSD1306 128x64 OLED
  * Note that the setting of parameters is still possible even if there is no display
  * (you just can't see what has actually been set)
  */
-#define UI_DISPLAY
+#undef UI_DISPLAY
 
 #define OCTAVE_OFFSET 4 /* e.g. octave -3 => encoded octave value is 1 */
 
@@ -193,7 +193,7 @@
 #define LED_FLASH_US 10000
 
 /* Modulaton wheel support: Output modwheel connected to pin A0 */
-#undef MODWHEEL
+#define MODWHEEL
 #define MODWHEEL_PIN A0
 #define MODWHEEL_TIMEOUT_US 5000 /* 5 ms intervals */
 
@@ -273,7 +273,7 @@ enum mode_flags {
 
 #define MODE_SET(flag) (mode_flags & MODE_BIT(flag))
 
-byte mode_flags = MODE_BIT(MODE_SPE_AVOID_STACKUP) | MODE_BIT(MODE_CC_PED_NRS); /* default value */
+byte mode_flags = 0; /* default value */
 
 bool setting_parameters = false;
 bool setting_parameters_prev = false;
