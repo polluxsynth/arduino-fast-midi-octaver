@@ -192,9 +192,9 @@
 /* LED flash time */
 #define LED_FLASH_US 10000
 
-/* Modulaton wheel support: Output modwheel connected to pin A0 */
+/* Modulaton wheel support: Output modwheel connected to pin A4 */
 #define MODWHEEL
-#define MODWHEEL_PIN A0
+#define MODWHEEL_PIN A4 /* Note: same pin used for display SDA */
 #define MODWHEEL_TIMEOUT_US 5000 /* 5 ms intervals */
 
 #define STATE_PASS             0
