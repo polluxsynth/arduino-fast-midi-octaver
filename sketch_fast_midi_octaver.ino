@@ -249,8 +249,6 @@ Fast_SSD1306 disp(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1, 1000000UL);
 
 long int now; /* Global time, set at start of loop() for each iteration */
 
-byte channel; /* last received MIDI channel 0..15 */
-
 byte transpose = 0;
 byte octave_encoded = OCTAVE_OFFSET;
 byte octave_prev = 0;
@@ -1072,7 +1070,7 @@ void process_setting(byte data)
   }
 }
 
-void process_midi(byte data)
+void process_midi(byte data, byte &channel)
 {
   /* static byte channel - global so modwheel can access it */
   static byte status = 0, prev_channel = -1; /* prev_channel for previous note on */
@@ -1547,6 +1545,7 @@ void setup() {
 
 void loop() {
   byte new_octave_encoded;
+  static byte channel; /* last received MIDI channel 0..15 */
 
   now = micros();
 
@@ -1597,7 +1596,7 @@ void loop() {
     if (setting_parameters)
       process_setting(data);
     else {
-      process_midi(data);
+      process_midi(data, channel);
 #ifdef MIDIDUMP
       if (dump_mode == DUMPMODE_IN) {
         dump(data);
