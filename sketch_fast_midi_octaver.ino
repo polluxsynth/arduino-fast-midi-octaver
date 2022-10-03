@@ -144,6 +144,9 @@
  * so previously held notes are still held, but will be released when the pedal is released. */
 #define DONT_SUSTAIN_WHEN_NOTE_CHANNEL_CHANGED
 
+/* Intercept program change messages, use them for functions, and don't pass them on */
+#define HANDLE_PROGRAM_CHANGE
+
 /* Dependencies */
 
 #if defined(SKIP_CC) || defined(EMULATE_SUSTAIN_PEDAL)
@@ -205,6 +208,7 @@
 #define STATE_NOTE_OFF_VEL     5
 #define STATE_CC_ADDR          6
 #define STATE_CC_VAL           7
+#define STATE_PROGRAM_CHANGE   8
 
 /* MIDI status bytes */
 #define NOTE_OFF 128 /* 2 data bytes */
@@ -251,12 +255,14 @@ long int now; /* Global time, set at start of loop() for each iteration */
 
 byte transpose = 0;
 byte octave_encoded = OCTAVE_OFFSET;
+byte new_octave_encoded = OCTAVE_OFFSET;
 byte octave_prev = 0;
 bool low_latency_mode = true;
 
 byte channelize = 0;
 byte r_channelize = 0;
 
+/* First byte of mode flags */
 enum mode_flags {
   MODE_SPE = 0,
   MODE_SPE_AVOID_STACKUP = 1,
@@ -274,6 +280,19 @@ enum mode_flags {
 
 /* saved mode flags: set default flags */
 byte mode_flags = MODE_BIT(MODE_SPE_AVOID_STACKUP) | MODE_BIT(MODE_CC_PED_NRS);
+
+/* Second byte of mode flags */
+enum mode2_flags {
+  MODE2_PC_OCTAVE = 0, /* CC bits 0..2 set octave (i.e. Roland patch no 1..8) */
+  MODE2_PC_CHAN = 1,   /* CC bits 3..6 set channel (i.e. Roland bank no 1..8) */
+  MODE2_LAST,
+};
+
+#define MODE2_BIT(flag) (1 << (flag))
+
+#define MODE2_SET(flag) (mode2_flags & MODE2_BIT(flag))
+
+byte mode2_flags = 0; /* default value */
 
 bool setting_parameters = false;
 bool setting_parameters_prev = false;
@@ -628,6 +647,10 @@ const char cc_nrs_s[] PROGMEM = "PedNoRunSt";
 #ifdef SKIP_CC
 const char skip_cc_s[] PROGMEM = "Skip CC22+";
 #endif
+#ifdef HANDLE_PROGRAM_CHANGE
+const char pc_octave_s[] PROGMEM = "P Chg Oct ";
+const char pc_chan_s[] PROGMEM = "P Chg Chan";
+#endif
 #ifdef MIDIDUMP
 const char mididump_s[] PROGMEM = "MIDI dump ";
 #endif
@@ -691,6 +714,18 @@ PROGMEM const struct screen_def settings_screens[] = {
     skip_cc_s, bool_str,
 #endif
                           &mode_flags, MODE_SKIP_CC, 1, bool_val },
+#endif
+#ifdef HANDLE_PROGRAM_CHANGE
+  {
+#ifdef UI_DISPLAY
+    pc_octave_s, bool_str,
+#endif
+                          &mode2_flags, MODE2_PC_OCTAVE, 1, bool_val },
+  {
+#ifdef UI_DISPLAY
+    pc_chan_s, bool_str,
+#endif
+                          &mode2_flags, MODE2_PC_CHAN, 1, bool_val },
 #endif
 #ifdef MIDIDUMP
   {
@@ -1189,6 +1224,13 @@ void process_midi(byte data, byte &channel)
       skip = true;
     }
 #endif
+#ifdef HANDLE_PROGRAM_CHANGE
+    else if (status == PROGRAM_CHANGE &&
+             (MODE2_SET(MODE2_PC_OCTAVE) || MODE2_SET(MODE2_PC_CHAN))) {
+      state = STATE_PROGRAM_CHANGE;
+      skip = true;
+    }
+#endif
     /* All other (channel, system and realtime) messages pass through */
     else if (status < 240) { /* Only channel messages have running status */
       state = STATE_PASS_CHANNEL_MSG;
@@ -1420,6 +1462,19 @@ void process_midi(byte data, byte &channel)
         fresh_status_byte = false; /* set for next CC_ADDR state */
         break;
 #endif
+#ifdef HANDLE_PROGRAM_CHANGE
+      case STATE_PROGRAM_CHANGE:
+        if (MODE2_SET(MODE2_PC_OCTAVE)) {
+          if ((data & 0x7) < 5) /* 5 octave ranges */
+            new_octave_encoded = (data & 0x7) + OCTAVE_OFFSET - 2; /* patch 11 -> octave -2, etc */
+          skip = true;
+        }
+        if (MODE2_SET(MODE2_PC_CHAN)) {
+          /* Do something useful, like set absolute or relative channel */
+          skip = true;
+        }
+        break;
+#endif
       case STATE_PASS_CHANNEL_MSG:
         /* If we're about to echo a data byte, potentially output a status byte
          * in case something was interjected (e.g. modwheel). The midi_output class
@@ -1449,6 +1504,7 @@ void process_midi(byte data, byte &channel)
       case STATE_NOTE_OFF_VEL: state = STATE_NOTE_OFF_NOTE; break;
       case STATE_CC_ADDR: state = STATE_CC_VAL; break;
       case STATE_CC_VAL: state = STATE_CC_ADDR; break;
+      /* For program change: just stay in same state */
       default: break;
     }
   }
@@ -1556,7 +1612,8 @@ void setup() {
 }
 
 void loop() {
-  byte new_octave_encoded;
+  byte new_octave_switch;
+  static byte octave_switch = 0;
   static byte channel; /* last received MIDI channel 0..15 */
 
   now = micros();
@@ -1574,7 +1631,12 @@ void loop() {
   }
 #endif
 
-  new_octave_encoded = read_octave_switch();
+  new_octave_switch = read_octave_switch();
+  /* If octave switch changed, register new value in new_octave_encoded */
+  if (new_octave_switch != octave_switch) {
+    octave_switch = new_octave_switch;
+    new_octave_encoded = octave_switch;
+  }
 #ifdef ENABLE_PARAMETER_SETTING
   if (new_octave_encoded > 1) {
     octave_encoded = new_octave_encoded;
