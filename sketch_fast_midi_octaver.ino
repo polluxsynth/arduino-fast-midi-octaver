@@ -117,7 +117,7 @@
  * is off.
  * Enabling this features adds 320 us of latency to (all) CC messages.
  */
-//#define SKIP_CC "\026\027\030" /* CC 22, 23, 24 */
+#define SKIP_CC "\026\027\030" /* CC 22, 23, 24 */
 
 /* Convert sustain pedal to delayed note offs - Sustain Pedal Emulation mode. */
 /* All the flags here can be disabled runtime in the settings screens (mode_flags) */
@@ -264,6 +264,7 @@ enum mode_flags {
   MODE_SPE_PEDAL_UP_WHEN_CHANNEL_CHANGED = 3,
   MODE_SPE_SOSTENUTO = 4,
   MODE_CC_PED_NRS = 5,
+  MODE_SKIP_CC = 6,
   MODE_LAST
 };
 
@@ -271,7 +272,8 @@ enum mode_flags {
 
 #define MODE_SET(flag) (mode_flags & MODE_BIT(flag))
 
-byte mode_flags = MODE_BIT(MODE_SPE_AVOID_STACKUP) | MODE_BIT(MODE_CC_PED_NRS); /* default value */
+/* saved mode flags: set default flags */
+byte mode_flags = MODE_BIT(MODE_SPE_AVOID_STACKUP) | MODE_BIT(MODE_CC_PED_NRS);
 
 bool setting_parameters = false;
 bool setting_parameters_prev = false;
@@ -623,6 +625,9 @@ const char spe_r_ch_s[] PROGMEM = "SPE P U Ch";
 const char spe_sost_s[] PROGMEM = "SPE Sostnu";
 const char cc_nrs_s[] PROGMEM = "PedNoRunSt";
 #endif
+#ifdef SKIP_CC
+const char skip_cc_s[] PROGMEM = "Skip CC22+";
+#endif
 #ifdef MIDIDUMP
 const char mididump_s[] PROGMEM = "MIDI dump ";
 #endif
@@ -679,6 +684,13 @@ PROGMEM const struct screen_def settings_screens[] = {
     cc_nrs_s, bool_str,
 #endif
                           &mode_flags, MODE_CC_PED_NRS, 1, bool_val },
+#endif
+#ifdef SKIP_CC
+  {
+#ifdef UI_DISPLAY
+    skip_cc_s, bool_str,
+#endif
+                          &mode_flags, MODE_SKIP_CC, 1, bool_val },
 #endif
 #ifdef MIDIDUMP
   {
@@ -1373,7 +1385,7 @@ void process_midi(byte data, byte &channel)
         addr = data;
         skipping_cc = false;
 #ifdef SKIP_CC
-        skipping_cc |= (!!data && !!strchr(SKIP_CC, data));
+        skipping_cc |= (MODE_SET(MODE_SKIP_CC) && !!data && !!strchr(SKIP_CC, data));
 #endif
 #ifdef EMULATE_SUSTAIN_PEDAL
         if (MODE_SET(MODE_SPE))
