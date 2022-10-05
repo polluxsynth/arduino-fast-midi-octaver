@@ -1353,6 +1353,12 @@ void process_midi(byte data)
               */
             midi_output.send_status(new_status, fresh_status_byte);
           }
+#else
+          /* To allow interjection of other messages (modwheel), we send a NOTE_OFF status here;
+           * the transmit logic will avoid actually sending any duplicate status bytes if we have
+           * already echoed it through. */
+          midi_output.send_status(NOTE_OFF | channel);
+
 #endif
           data = apply_note_off_transpose(note, true);
         }
