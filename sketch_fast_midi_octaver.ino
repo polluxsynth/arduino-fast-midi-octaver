@@ -146,6 +146,13 @@
 
 /* Intercept program change messages, use them for functions, and don't pass them on */
 #define HANDLE_PROGRAM_CHANGE
+/* This is special for the Alpha Juno 2 - the Preset patch group button selects
+ * programs 64 and up, but is located to the left of the Memory patch group, which in turn
+ * selects programs 0..63 . So to make MIDI channel selection a bit more logical,
+ * swap the groups so that the leftmost (Preset) group selects channels 1..8, and the right
+ * one selects channels 9..16 .
+ */
+#define PC_CHAN_CTRL_SWAP 0x8
 
 /* Dependencies */
 
@@ -1470,7 +1477,8 @@ void process_midi(byte data, byte &channel)
           skip = true;
         }
         if (MODE2_SET(MODE2_PC_CHAN)) {
-          /* Do something useful, like set absolute or relative channel */
+          channelize = (((data >> 3) & 0xf) ^ PC_CHAN_CTRL_SWAP) + 1; /* bank no + group */
+          display_screen(&octave_screen);
           skip = true;
         }
         break;
