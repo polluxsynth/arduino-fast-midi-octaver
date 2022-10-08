@@ -264,10 +264,18 @@ byte transpose = 0;
 byte octave_encoded = OCTAVE_OFFSET;
 byte new_octave_encoded = OCTAVE_OFFSET;
 byte octave_prev = 0;
-bool low_latency_mode = true;
+
+byte pc_octave = 0;
+byte new_pc_octave = 0;
 
 byte channelize = 0;
+byte channelize_prev = 0;
 byte r_channelize = 0;
+
+byte pc_channelize = 0;
+byte new_pc_channelize = 0;
+
+bool low_latency_mode = true;
 
 /* First byte of mode flags */
 enum mode_flags {
@@ -1471,15 +1479,23 @@ void process_midi(byte data, byte &channel)
 #endif
 #ifdef HANDLE_PROGRAM_CHANGE
       case STATE_PROGRAM_CHANGE:
+        static bool first_pc = true;
         if (MODE2_SET(MODE2_PC_OCTAVE)) {
           if ((data & 0x7) < 5) /* 5 octave ranges */
-            new_octave_encoded = (data & 0x7) + OCTAVE_OFFSET - 2; /* patch 11 -> octave -2, etc */
+            new_pc_octave = (data & 0x7) + OCTAVE_OFFSET - 2; /* patch 11 -> octave -2, etc */
           skip = true;
         }
         if (MODE2_SET(MODE2_PC_CHAN)) {
-          channelize = (((data >> 3) & 0xf) ^ PC_CHAN_CTRL_SWAP) + 1; /* bank no + group */
-          display_screen(&octave_screen);
+          new_pc_channelize = (((data >> 3) & 0xf) ^ PC_CHAN_CTRL_SWAP) + 1; /* bank no + group */
           skip = true;
+        }
+        /* If this is the first Program Change received, force octave and channelize
+         * to be unchanged, so that if only one of them is subsequently changed, the
+         * other one won't be. */
+        if (first_pc) {
+          pc_octave = new_pc_octave;
+          pc_channelize = new_pc_channelize;
+          first_pc = false;
         }
         break;
 #endif
@@ -1645,6 +1661,10 @@ void loop() {
     octave_switch = new_octave_switch;
     new_octave_encoded = octave_switch;
   }
+  if (new_pc_octave != pc_octave) {
+    pc_octave = new_pc_octave;
+    new_octave_encoded = pc_octave;
+  }
 #ifdef ENABLE_PARAMETER_SETTING
   if (new_octave_encoded > 1) {
     octave_encoded = new_octave_encoded;
@@ -1655,8 +1675,14 @@ void loop() {
 #else
   octave_encoded = new_octave_encoded;
 #endif
-  if (octave_encoded != octave_prev || setting_parameters != setting_parameters_prev) {
 
+  if (new_pc_channelize != pc_channelize) {
+    pc_channelize = new_pc_channelize;
+    channelize = pc_channelize;
+  }
+
+  if (octave_encoded != octave_prev || channelize != channelize_prev ||
+      setting_parameters != setting_parameters_prev) {
     /* Courtesy calculation - so we don't need to do it for each note on */
     transpose = octave_encoded * 12 - OCTAVE_OFFSET * 12;
 #ifdef UI_DISPLAY
@@ -1666,6 +1692,7 @@ void loop() {
       display_screen(&octave_screen);
 #endif
     octave_prev = octave_encoded;
+    channelize_prev = channelize;
     setting_parameters_prev = setting_parameters;
   }
 
