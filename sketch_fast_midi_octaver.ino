@@ -192,10 +192,11 @@
 /* LED flash time */
 #define LED_FLASH_US 10000
 
-/* Modulaton wheel support: Output modwheel connected to pin A4 */
+/* Modulation wheel support: Output modwheel connected to pin A4 */
 #define MODWHEEL
 #define MODWHEEL_PIN A4 /* Note: same pin used for display SDA */
 #define MODWHEEL_TIMEOUT_US 5000 /* 5 ms intervals */
+#define MODWHEEL_CC CC_PORTAMENTO_TIME
 
 #define STATE_PASS             0
 #define STATE_PASS_CHANNEL_MSG 1
@@ -223,6 +224,7 @@
 #define REALTIME 248 /* This and above */
 
 #define CC_MOD_WHEEL 1
+#define CC_PORTAMENTO_TIME 5
 #define CC_SUSTAIN_PEDAL 64
 
 #ifdef UI_DISPLAY
@@ -1501,7 +1503,7 @@ public:
     }
     if (m_modwheel_updated && tracker.can_interject()) {
       midi_output.send_status(CONTROL_CHANGE | channel);
-      midi_output.send_data(CC_MOD_WHEEL);
+      midi_output.send_data(MODWHEEL_CC);
       midi_output.send_data(m_modwheel);
       m_modwheel_updated = false;
     }
