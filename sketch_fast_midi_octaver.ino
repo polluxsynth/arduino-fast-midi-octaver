@@ -2,7 +2,7 @@
  * Fast (low latency - 320 us) octave transpose filter, with sustain pedal emulation and MIDI
  * channelize options, and optional MIDI dump mode.
  *
- * Copyright (c) 2022, Ricard Wanderlof.
+ * Copyright (c) 2022-2024, Ricard Wanderlof.
  * Released under GPLv2. See LICENSE for details.
  */
 
@@ -1571,6 +1571,11 @@ public:
     sbi(ADCSRA, ADPS2);
     cbi(ADCSRA, ADPS1);
     cbi(ADCSRA, ADPS0);
+
+    /* This should be redundant, but seemed to be necessary on an Arduino Nano with ATMega168 to
+     * set the reference voltage the first time. It's harmless otherwise, so just to this at all times.
+     */
+    analogReference(DEFAULT); /* Set analog reference to AVCC (= 5.0V on Arduino boards). */
 
     m_pin = pin;
 
