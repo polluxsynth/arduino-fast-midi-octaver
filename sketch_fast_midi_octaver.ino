@@ -1,6 +1,7 @@
 /*
- * Fast (low latency - 320 us) octave transpose filter, with sustain pedal emulation and MIDI
- * channelize options, and optional MIDI dump mode.
+ * Originally fast (low latency - 320 us) octave transpose filter, with sustain pedal emulation
+ * and MIDI channelize options, and optional MIDI dump mode.
+ * Reconfigured as CC pedal.
  *
  * Copyright (c) 2022-2024, Ricard Wanderlof.
  * Released under GPLv2. See LICENSE for details.
@@ -109,7 +110,7 @@
 /* Define in order to enable all forms of note processing, including transpostion
  * and Sustain Pedal Elimination (SPE).
  */
-#define NOTE_PROCESSING
+#undef NOTE_PROCESSING
 
 /* Define in order to remember note on channel when setting note offs in low latency mode.
  * (channel is always remembered in normal latency mode as it doesn't add any latency).
@@ -122,7 +123,7 @@
  * is off.
  * Enabling this features adds 320 us of latency to (all) CC messages.
  */
-#define SKIP_CC "\026\027\030" /* CC 22, 23, 24 */
+#undef SKIP_CC "\026\027\030" /* CC 22, 23, 24 */
 
 /* Convert sustain pedal to delayed note offs - Sustain Pedal Emulation mode. */
 /* All the flags here can be disabled runtime in the settings screens (mode_flags) */
@@ -137,7 +138,7 @@
  * is set or not.
  */
 #ifdef NOTE_PROCESSING /* Note processing needs to be enabled, or else there's nothing to emulate. */
-#define EMULATE_SUSTAIN_PEDAL
+#undef EMULATE_SUSTAIN_PEDAL
 #endif
 /* Sub modes: */
 /* When repeated notes received while sustaing for the same note with the same transpose/channel
@@ -152,7 +153,7 @@
 #define DONT_SUSTAIN_WHEN_NOTE_CHANNEL_CHANGED
 
 /* Intercept program change messages, use them for functions, and don't pass them on */
-#define HANDLE_PROGRAM_CHANGE
+#undef HANDLE_PROGRAM_CHANGE
 /* This is special for the Alpha Juno 2 - the Preset patch group button selects
  * programs 64 and up, but is located to the left of the Memory patch group, which in turn
  * selects programs 0..63 . So to make MIDI channel selection a bit more logical,
@@ -188,17 +189,17 @@
 /* Define this to enable the setting of parameters. When not set, the lowest octave
  * setting will be replaced by the parameter setting mode.
  */
-#define ENABLE_PARAMETER_SETTING
+#undef ENABLE_PARAMETER_SETTING
 
 /* Define this to enable MIDI dumps. */
-#define MIDIDUMP
+#undef MIDIDUMP
 #define DUMPBUF_SIZE 12
 
 /* Define this to enable runtime parameter display, on an SSD1306 128x64 OLED
  * Note that the setting of parameters is still possible even if there is no display
  * (you just can't see what has actually been set)
  */
-#define UI_DISPLAY
+#undef UI_DISPLAY
 
 #define OCTAVE_OFFSET 4 /* e.g. octave -3 => encoded octave value is 1 */
 
@@ -214,16 +215,16 @@
 #define TRANSPOSE_PIN_4        6
 #define TRANSPOSE_PIN_5        7
 
-#define LED_FLASH_MIDI_IN
-#undef LED_FLASH_MIDI_OUT
+#undef LED_FLASH_MIDI_IN
+#define LED_FLASH_MIDI_OUT
 
 /* LED flash time */
 #define LED_FLASH_US 10000
 
 /* Modulation wheel support: Output modwheel connected to pin A0 */
-#undef MODWHEEL
-#define MODWHEEL_CC 1
-#undef MODWHEEL_CHANNEL /* MIDI channel number - 1 when set */
+#define MODWHEEL
+#define MODWHEEL_CC 73
+#define MODWHEEL_CHANNEL 0 /* MIDI channel number - 1 when set */
 #define MODWHEEL_PIN A0
 #define MODWHEEL_TIMEOUT_US 5000 /* 5 ms intervals */
 
