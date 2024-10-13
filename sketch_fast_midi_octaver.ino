@@ -106,6 +106,11 @@
  *   next power on.
  */
 
+/* Define in order to enable all forms of note processing, including transpostion
+ * and Sustain Pedal Elimination (SPE).
+ */
+#define NOTE_PROCESSING
+
 /* Define in order to remember note on channel when setting note offs in low latency mode.
  * (channel is always remembered in normal latency mode as it doesn't add any latency).
  * This adds a further 320 us latency to note off messages.
@@ -131,7 +136,9 @@
  * of whether running status is employed by the source or not, or MIRROR_INCOMING_RUNNING_STATUS
  * is set or not.
  */
+#ifdef NOTE_PROCESSING /* Note processing needs to be enabled, or else there's nothing to emulate. */
 #define EMULATE_SUSTAIN_PEDAL
+#endif
 /* Sub modes: */
 /* When repeated notes received while sustaing for the same note with the same transpose/channel
  * as previous note, send note off to avoid stacking up voices. */
@@ -472,8 +479,9 @@ class NoteDescriptors {
     notebits m_sostenuto_bits;
 };
 
+#ifdef NOTE_PROCESSING
 NoteDescriptors note_descriptors;
-
+#endif
 
 byte read_octave_switch(void)
 {
@@ -856,6 +864,7 @@ void display_screen(/* PROGMEM */ const struct screen_def *screen)
 }
 #endif
 
+#ifdef NOTE_PROCESSING
 byte apply_note_on_transpose(byte note, byte channel)
 {
   byte note_transpose = transpose;
@@ -887,6 +896,7 @@ byte apply_note_off_transpose(byte note, bool clear_descriptor_entry)
 
   return ret;
 }
+#endif
 
 /* Track a MIDI stream, keeping track of when it is possible to insert other
  * messages into the stream. */
@@ -1017,6 +1027,7 @@ MidiOutput midi_output;
 /* Release all notes marked as sustained in the desciptor list.
  * Return true of something actually was sent.
  */
+#ifdef NOTE_PROCESSING
 bool release_sustained_notes(void)
 {
   byte note;
@@ -1040,9 +1051,11 @@ bool release_sustained_notes(void)
   }
   return something_sent;
 }
+#endif
 
 /* Set all played notes to sustain.
  */
+#ifdef EMULATE_SUSTAIN_PEDAL
 void set_played_to_sustain(void)
 {
   byte note;
@@ -1052,7 +1065,7 @@ void set_played_to_sustain(void)
       note_descriptors.set_sostenuto_held(note);
   }
 }
-
+#endif
 
 #define SETTINGS_BASE_NOTE 36 /* standard bottom note of 5 and 4 octave keyboard */
 
@@ -1191,6 +1204,7 @@ void process_midi(byte data, byte &channel)
     /* Track note on/off and control change. All other channel messages just get sent
      * through.
      */
+#ifdef NOTE_PROCESSING
     if (status == NOTE_ON) {
 #ifdef RELEASE_ALL_NOTES_WHEN_CHANNEL_OR_OCTAVE_CHANGED
       if (MODE_SET(MODE_SPE_RELEASE_ALL_WHEN_CHANNEL_CHANGED) &&
@@ -1232,22 +1246,23 @@ void process_midi(byte data, byte &channel)
        * until we know which note it is. */
       if (sustaining || MODE_SET(MODE_SPE_SOSTENUTO))
         skip == true;
-    }
+    } else
+#endif /* NOTE_PROCESSING */
 #ifdef PROCESS_CC
-      else if (status == CONTROL_CHANGE) {
+    if (status == CONTROL_CHANGE) {
       state = STATE_CC_ADDR;
       skip = true;
-    }
+    } else
 #endif
 #ifdef HANDLE_PROGRAM_CHANGE
-    else if (status == PROGRAM_CHANGE &&
+    if (status == PROGRAM_CHANGE &&
              (MODE2_SET(MODE2_PC_OCTAVE) || MODE2_SET(MODE2_PC_CHAN))) {
       state = STATE_PROGRAM_CHANGE;
       skip = true;
-    }
+    } else
 #endif
     /* All other (channel, system and realtime) messages pass through */
-    else if (status < 240) { /* Only channel messages have running status */
+    if (status < 240) { /* Only channel messages have running status */
       state = STATE_PASS_CHANNEL_MSG;
       if (status == PROGRAM_CHANGE || status == CHANNEL_PRESSURE)
         pass_state_bytes = 1;
@@ -1258,6 +1273,7 @@ void process_midi(byte data, byte &channel)
       state = STATE_PASS;
   } else { /* MIDI data byte */
     switch (state) {
+#ifdef NOTE_PROCESSING
       case STATE_NOTE_ON_NOTE:
 #ifdef RELEASE_ALL_NOTES_WHEN_CHANNEL_OR_OCTAVE_CHANGED
         if (MODE_SET(MODE_SPE_RELEASE_ALL_WHEN_CHANNEL_CHANGED) &&
@@ -1437,6 +1453,7 @@ void process_midi(byte data, byte &channel)
         else
           fresh_status_byte = false; /* next non-status will employ running status */
         break;
+#endif /* NOTE_PROCESSING */
 #ifdef PROCESS_CC
       case STATE_CC_ADDR:
         addr = data;
