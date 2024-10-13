@@ -892,7 +892,7 @@ byte apply_note_off_transpose(byte note, bool clear_descriptor_entry)
  * messages into the stream. */
 class Tracker {
 public:
-  Tracker(void): m_data_bytes(0), m_data_counter(0), m_can_interject(false)
+  Tracker(void): m_data_bytes(0), m_data_counter(0), m_can_interject(true)
   {
   }
 
