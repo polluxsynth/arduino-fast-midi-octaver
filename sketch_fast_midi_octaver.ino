@@ -206,6 +206,9 @@
 #define TRANSPOSE_PIN_4        6
 #define TRANSPOSE_PIN_5        7
 
+#define LED_FLASH_MIDI_IN
+#undef LED_FLASH_MIDI_OUT
+
 /* LED flash time */
 #define LED_FLASH_US 10000
 
@@ -960,6 +963,12 @@ Tracker tracker;
 void serial_write(byte data)
 {
   Serial.write(data);
+#ifdef LED_FLASH_MIDI_OUT
+  /* Flash led = turn it on here, and set timeout */
+  digitalWrite(LED_BUILTIN, HIGH ^ !low_latency_mode);
+  led_flash_time = now;
+#endif
+
 #ifdef MODWHEEL
   tracker.track(data); /* track outgoing data so we can interject modwheel message when needed */
 #endif
@@ -1719,9 +1728,11 @@ void loop() {
   }
 
   if (Serial.available()) {
+#ifdef LED_FLASH_MIDI_IN
     /* Flash led = turn it on here, and set timeout */
     digitalWrite(LED_BUILTIN, HIGH ^ !low_latency_mode);
     led_flash_time = now;
+#endif
 
     byte data = Serial.read();
     if (setting_parameters)
