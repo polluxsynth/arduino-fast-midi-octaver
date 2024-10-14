@@ -215,6 +215,7 @@
 /* Modulation wheel support: Output modwheel connected to pin A0 */
 #undef MODWHEEL
 #define MODWHEEL_CC 1
+#undef MODWHEEL_CHANNEL /* MIDI channel number - 1 when set */
 #define MODWHEEL_PIN A0
 #define MODWHEEL_TIMEOUT_US 5000 /* 5 ms intervals */
 
@@ -1749,7 +1750,13 @@ void loop() {
     }
   }
 #ifdef MODWHEEL
+#ifdef MODWHEEL_CHANNEL
+  /* If fixed channel configured, use that. */
+  modwheel.process(now, MODWHEEL_CHANNEL);
+#else
+  /* Output on channel of last received message. */
   modwheel.process(now, channel);
+#endif
 #endif
 #ifdef UI_DISPLAY
 #ifdef MIDIDUMP
