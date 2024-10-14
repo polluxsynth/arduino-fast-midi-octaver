@@ -212,8 +212,9 @@
 /* LED flash time */
 #define LED_FLASH_US 10000
 
-/* Modulaton wheel support: Output modwheel connected to pin A0 */
+/* Modulation wheel support: Output modwheel connected to pin A0 */
 #undef MODWHEEL
+#define MODWHEEL_CC 1
 #define MODWHEEL_PIN A0
 #define MODWHEEL_TIMEOUT_US 5000 /* 5 ms intervals */
 
@@ -1622,7 +1623,7 @@ public:
     }
     if (m_modwheel_updated && tracker.can_interject()) {
       midi_output.send_status(CONTROL_CHANGE | channel);
-      midi_output.send_data(CC_MOD_WHEEL);
+      midi_output.send_data(MODWHEEL_CC);
       midi_output.send_data(m_modwheel);
       m_modwheel_updated = false;
     }
