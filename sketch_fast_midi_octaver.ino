@@ -177,6 +177,14 @@
 #define RUNNING_STATUS_TIMEOUT_US 1000000
 #endif
 
+/* If we don't receive MIDI data for 100 ms, reset the tracker state;
+ * this handles the case of an incomplete MIDI message being received
+ * (like a note on with note number but no velocity byte) which would
+ * otherwise hang the tracker indefinitely (or until more data arrives),
+ * inhibiting our ability to send modwheel data.
+ */
+#define TRACKER_TIMEOUT_US 100000
+
 /* Define this to enable the setting of parameters. When not set, the lowest octave
  * setting will be replaced by the parameter setting mode.
  */
@@ -228,6 +236,7 @@
 #define STATE_CC_ADDR          6
 #define STATE_CC_VAL           7
 #define STATE_PROGRAM_CHANGE   8
+#define STATE_SKIP             9
 
 /* MIDI status bytes */
 #define NOTE_OFF 128 /* 2 data bytes */
@@ -362,6 +371,10 @@ void dump(byte data)
 
 long int led_flash_time;
 long int running_status_time;
+#ifdef MODWHEEL
+long int last_interject_time;
+bool interject_timeout_enabled;
+#endif
 
 struct note {
   byte status;
@@ -911,7 +924,17 @@ public:
   {
   }
 
-  void track(byte data)
+  /* Reset Tracker state; useful if for some reason the input data
+   * stream gets interrupted in the middle of a message.
+   */
+  void reset(void)
+  {
+    m_data_bytes = 0;
+    m_data_counter = 0;
+    m_can_interject = true;
+  }
+
+  bool track(byte data)
   {
     if (data & 128) { /* status byte */
       if (data < REALTIME) { /* REALTIME messages can always be interjected */
@@ -946,6 +969,7 @@ public:
           m_can_interject = false;
       }
     }
+    return m_can_interject;
   }
 
   bool can_interject(void)
@@ -972,7 +996,11 @@ void serial_write(byte data)
 #endif
 
 #ifdef MODWHEEL
-  tracker.track(data); /* track outgoing data so we can interject modwheel message when needed */
+  /* track outgoing data so we can interject modwheel message when needed */
+  interject_timeout_enabled = !tracker.track(data);
+  /* Reset tracker timeout whenever interjection is possible. */
+  if (interject_timeout_enabled)
+    last_interject_time = now;
 #endif
 #ifdef MIDIDUMP
   if (dump_mode == DUMPMODE_OUT) {
@@ -1156,12 +1184,12 @@ void process_setting(byte data)
   }
 }
 
-void process_midi(byte data, byte &channel)
+void process_midi(byte data, byte &channel, bool force_data_skip)
 {
   /* static byte channel - global so modwheel can access it */
   static byte status = 0, prev_channel = -1; /* prev_channel for previous note on */
   static byte prev_octave_encoded = -1; /* transposition for previous note on */
-  static byte state = STATE_PASS;
+  static byte state = force_data_skip ? STATE_PASS : STATE_SKIP;
   static byte note; /* saved note across note on/off message reception, in !low_latency_mode */
   static byte addr; /* saved control change address */
   static bool fresh_status_byte = false; /* no current input running status */
@@ -1538,7 +1566,10 @@ void process_midi(byte data, byte &channel)
         if (++pass_state_count >= pass_state_bytes)
           pass_state_count = 0;
         break;
-        /* fallthrough */
+      case STATE_SKIP:
+        /* Keep skipping data bytes until status byte received. */
+        skip = true;
+        break;
       case STATE_PASS:
       default: /* Do nothing, just echo byte received */
         break;
@@ -1556,7 +1587,7 @@ void process_midi(byte data, byte &channel)
       case STATE_NOTE_OFF_VEL: state = STATE_NOTE_OFF_NOTE; break;
       case STATE_CC_ADDR: state = STATE_CC_VAL; break;
       case STATE_CC_VAL: state = STATE_CC_ADDR; break;
-      /* For program change: just stay in same state */
+      /* For program change and STATE_SKIP: just stay in same state */
       default: break;
     }
   }
@@ -1661,6 +1692,9 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
 
   running_status_time = led_flash_time = micros();
+#ifdef MODWHEEL
+  interject_timeout_enabled = false;
+#endif
   midi_output.clear_running_status();
 
 #ifdef MODWHEEL
@@ -1672,6 +1706,7 @@ void loop() {
   byte new_octave_switch;
   static byte octave_switch = 0;
   static byte channel; /* last received MIDI channel 0..15 */
+  static bool trigger_force_data_skip = true;
 
   now = micros();
 
@@ -1685,6 +1720,29 @@ void loop() {
   {
     midi_output.clear_running_status(); /* force next message status byte to be sent */
     running_status_time = now; /* reset timer */
+  }
+#endif
+
+#ifdef MODWHEEL
+  if (interject_timeout_enabled && now - last_interject_time > TRACKER_TIMEOUT_US)
+  {
+    midi_output.clear_running_status(); /* force next message status byte to be sent */
+    tracker.reset(); /* Allow interjection */
+    interject_timeout_enabled = false; /* disable timer */
+    trigger_force_data_skip = true; /* Stop echoing MIDI data bytes, until status rx'd */
+    /* Note that setting trigger_force_data_skip will stop echoing MIDI bytes
+     * even when no modwheel data is actually output. While this is
+     * technically not wholly what we want (we'd actually only want to stop
+     * echoing MIDI data bytes if we sent a modwheel message
+     * after resetting the tracker) it becomes quite complex otherwise, as
+     * we would need to keep track of whether or not any MIDI data has been
+     * echoed before we eventually transmit modwheel data. Since stopping
+     * to echo data bytes in the event of a cable breakage for instance
+     * is actually a Good Thing, we just keep it simple, and disable MIDI
+     * data byte echoing when the interject timeout fires. The only
+     * remaining illogicity is that it is only in MODWHEEL mode that this
+     * actually is employed.
+     */
   }
 #endif
 
@@ -1740,7 +1798,11 @@ void loop() {
     if (setting_parameters)
       process_setting(data);
     else {
-      process_midi(data, channel);
+      process_midi(data, channel, trigger_force_data_skip);
+      /* trigger_force_data_skip will be propagated to internal state of process_midi().
+       * Therefore, we clear our own control variable here after triggering.
+       */
+      trigger_force_data_skip = false;
 #ifdef MIDIDUMP
       if (dump_mode == DUMPMODE_IN) {
         dump(data);
