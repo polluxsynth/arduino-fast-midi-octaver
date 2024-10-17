@@ -1639,12 +1639,19 @@ public:
     m_pin = pin;
 
     m_modwheel_time = now;
+
+    /* Read ADC once to get rid of initial state, then read reference
+     * value to avoid transmitting of current pedal state upon startup
+     * (unless state happens to be 0),
+     */
+    (void) read_pot();
+    m_old_raw_wheel = read_pot();
   }
 
   void process(long int now, byte channel)
   {
     if (now - m_modwheel_time > MODWHEEL_TIMEOUT_US) {
-      byte raw_wheel = analogRead(m_pin) >> 2; /* Scale from 0..1023 to 0..255 */
+      byte raw_wheel = read_pot();
       byte diff = raw_wheel - m_old_raw_wheel + 1; /* diff -1..+1 -> 0..+2 */
       if (diff > 2) {
         m_old_raw_wheel = raw_wheel;
@@ -1667,6 +1674,11 @@ private:
   bool m_modwheel_updated; /* set when value changed, until we have transmitted it */
   byte m_modwheel; /* current modwheel value 0..127 */
   int m_pin; /* Arduino pin number */
+
+  inline byte read_pot(void)
+  {
+    return analogRead(m_pin) >> 2; /* Scale from 0..1023 to 0..255 */
+  }
 };
 
 Modwheel modwheel;
