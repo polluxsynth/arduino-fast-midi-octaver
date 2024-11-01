@@ -137,14 +137,14 @@ on either of these libraries.
 
 The Arduino pins are used as follows:
 
-D0 -  MIDI IN
-D1 -  MIDI OUT
-D2 -  Input: Ground for Octave -3 / Settings mode
-D3 -  Input: Ground for Octave -2
-D4 -  Input: Ground for Octave -1
-D5 -  Input: Ground for Octave 0
-D6 -  Input: Ground for Octave +1
-D7 -  Input: Ground for Octave +2
-D13 - MIDI activity LED anode (active high)
-A4 -  OLED display SDA
-A5 -  OLED display SCL
+D0 -  MIDI IN  
+D1 -  MIDI OUT  
+D2 -  Input: Ground for Octave -3 / Settings mode  
+D3 -  Input: Ground for Octave -2  
+D4 -  Input: Ground for Octave -1  
+D5 -  Input: Ground for Octave 0  
+D6 -  Input: Ground for Octave +1  
+D7 -  Input: Ground for Octave +2  
+D13 - MIDI activity LED anode (active high)  
+A4 -  OLED display SDA  
+A5 -  OLED display SCL  
