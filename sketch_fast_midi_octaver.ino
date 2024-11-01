@@ -328,7 +328,7 @@ enum mode2_flags {
 
 #define MODE2_SET(flag) (mode2_flags & MODE2_BIT(flag))
 
-byte mode2_flags = 0; /* default value */
+byte mode2_flags = MODE_BIT(MODE2_PC_OCTAVE) | MODE_BIT(MODE2_PC_CHAN); /* default value */
 
 bool setting_parameters = false;
 bool setting_parameters_prev = false;
