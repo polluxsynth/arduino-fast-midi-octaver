@@ -122,7 +122,7 @@
  * is off.
  * Enabling this features adds 320 us of latency to (all) CC messages.
  */
-#define SKIP_CC "\026\027\030" /* CC 22, 23, 24 */
+#undef SKIP_CC "\026\027\030" /* CC 22, 23, 24 */
 
 /* Convert sustain pedal to delayed note offs - Sustain Pedal Emulation mode. */
 /* All the flags here can be disabled runtime in the settings screens (mode_flags) */
