@@ -13,7 +13,7 @@ D0 and D1, respectively, on an Arduino UNO.
 
 # Octaver
 
-The basic functionality is a fast (low latency - 320 µs) octave transposer,
+The basic functionality is a fast (low latency - 320 Âµs) octave transposer,
 which can shift the octave of the notes in the MIDI stream by
 -3 (only when parameter setting is not enabled build time in the code),
 -2, -1, 0, +1 or +2 octaves.
@@ -21,8 +21,8 @@ which can shift the octave of the notes in the MIDI stream by
 The lowest latency is achieved with keyboards which output MIDI Note Off
 messages for note off events, rather than MIDI Note on messages with the
 velocity set to 0. In the former case, the latency through the device is
-a mere 320 µs. This is known as low latency mode. In the latter case, a further
-320 µs of latency is added. This is known as normal mode. The device switches
+a mere 320 Âµs. This is known as low latency mode. In the latter case, a further
+320 Âµs of latency is added. This is known as normal mode. The device switches
 between the two automatically depending on what MIDI messages are present
 in the incoming MIDI stream. Normal mode is indicated by the MIDI LED
 (connected to the LED_BUILTIN (D13) pin on the Arduino) being inverted, i.e.
