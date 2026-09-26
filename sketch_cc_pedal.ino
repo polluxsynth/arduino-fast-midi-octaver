@@ -223,7 +223,7 @@
 
 /* Modulation wheel support: Output modwheel connected to pin A0 */
 #define MODWHEEL
-#define MODWHEEL_CC 1
+#define MODWHEEL_CC 102 /* Prophet REV2 filter cutoff frequency */
 #define MODWHEEL_CHANNEL 0 /* MIDI channel number - 1 when set */
 #define MODWHEEL_PIN A0
 #define MODWHEEL_TIMEOUT_US 5000 /* 5 ms intervals */
